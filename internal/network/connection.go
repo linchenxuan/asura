@@ -32,25 +32,25 @@ type IConnection interface {
 }
 
 type _Connection struct {
-	Id      valobj.ConnectionID
-	Conn    net.Conn
-	ConnMgr IConnManager
-	WriteCh chan []byte
-	Ctx     context.Context
-	Cancel  context.CancelFunc
-	State   valobj.ConnState
+	id      valobj.ConnectionID
+	rawConn net.Conn
+	connMgr IConnManager
+	writeCh chan []byte
+	ctx     context.Context
+	cancel  context.CancelFunc
+	state   valobj.ConnState
 }
 
 func NewConnection(mgr IConnManager, conn net.Conn) IConnection {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	asuraConn := &_Connection{
-		Id:      valobj.GenConnectionID(),
-		Conn:    conn,
-		ConnMgr: mgr,
-		Ctx:     ctx,
-		Cancel:  cancel,
-		WriteCh: make(chan []byte, mgr.Option().WriteBuffer),
+		id:      valobj.GenConnectionID(),
+		rawConn: conn,
+		connMgr: mgr,
+		ctx:     ctx,
+		cancel:  cancel,
+		writeCh: make(chan []byte, mgr.Option().WriteBuffer),
 	}
 
 	if hook := mgr.GetOnConnected(); hook != nil {
@@ -63,71 +63,71 @@ func NewConnection(mgr IConnManager, conn net.Conn) IConnection {
 	return asuraConn
 }
 
-func (conn *_Connection) Send(data []byte) error {
-	if conn.State == valobj.ConnClosed {
+func (connection *_Connection) Send(data []byte) error {
+	if connection.state == valobj.ConnClosed {
 		return asuraError.ConnectionClosed
 	}
 
 	_DPLocker.RLock()
-	err := _DataPackInstance.Pack(conn.Conn, data)
+	err := _DataPackInstance.Pack(connection.rawConn, data)
 	_DPLocker.RUnlock()
 
 	return err
 }
 
-func (conn *_Connection) SendAsync(data []byte) error {
-	if conn.State == valobj.ConnClosed {
+func (connection *_Connection) SendAsync(data []byte) error {
+	if connection.state == valobj.ConnClosed {
 		return asuraError.ConnectionClosed
 	}
 
-	conn.WriteCh <- data
+	connection.writeCh <- data
 	return nil
 }
 
-func (conn *_Connection) Close() {
-	if disHook := conn.ConnMgr.GetOnDisconnect(); disHook != nil {
-		disHook(conn)
+func (connection *_Connection) Close() {
+	if disHook := connection.connMgr.GetOnDisconnect(); disHook != nil {
+		disHook(connection)
 	}
 
-	conn.Cancel()
-	conn.Conn.Close()
-	conn.State = valobj.ConnClosed
+	connection.cancel()
+	connection.rawConn.Close()
+	connection.state = valobj.ConnClosed
 }
 
-func (conn *_Connection) GetID() valobj.ConnectionID {
-	return conn.Id
+func (connection *_Connection) GetID() valobj.ConnectionID {
+	return connection.id
 }
 
-func (conn *_Connection) readServe() {
-	defer conn.Close()
+func (connection *_Connection) readServe() {
+	defer connection.Close()
 
 	for {
 		select {
-		case <-conn.Ctx.Done():
+		case <-connection.ctx.Done():
 			return
 		default:
 			_DPLocker.RLock()
-			data, err := _DataPackInstance.Unpack(conn.Conn)
+			data, err := _DataPackInstance.Unpack(connection.rawConn)
 			_DPLocker.RUnlock()
 			// TODO 处理不同错误类型
 			if err != nil {
 				return
 			}
-			if recived := conn.ConnMgr.GetOnReceived(); recived != nil {
-				recived(conn, data)
+			if recived := connection.connMgr.GetOnReceived(); recived != nil {
+				recived(connection, data)
 			}
 		}
 	}
 }
 
-func (conn *_Connection) writeServe() {
+func (connection *_Connection) writeServe() {
 	for {
 		select {
-		case <-conn.Ctx.Done():
+		case <-connection.ctx.Done():
 			return
-		case data := <-conn.WriteCh:
+		case data := <-connection.writeCh:
 			_DPLocker.RLock()
-			_DataPackInstance.Pack(conn.Conn, data)
+			_DataPackInstance.Pack(connection.rawConn, data)
 			_DPLocker.RUnlock()
 		}
 	}
