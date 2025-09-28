@@ -16,29 +16,29 @@ type LogCfg struct {
 	// FileSplitMB determines the file rotation threshold in megabytes.
 	// When log file exceeds this size, automatic rotation creates new files.
 	// Supports hot-reload for runtime adjustment of rotation strategy.
-	FileSplitMB int `mapstructure:"splitmb"`
+	FileSplitMB int `mapstructure:"splitMB"`
 
 	// FileSplitHour specifies the hour of day (0-23) for time-based file rotation.
 	// Enables daily log rotation at specific times for operational convenience.
-	FileSplitHour int `mapstructure:"splithour"`
+	FileSplitHour int `mapstructure:"splitHour"`
 
 	// IsAsync enables asynchronous log writing to prevent I/O blocking.
 	// Recommended for high-throughput game servers to maintain low latency.
-	IsAsync bool `mapstructure:"isasync"`
+	IsAsync bool `mapstructure:"isAsync"`
 
 	// AsyncCacheSize limits the maximum buffered log entries in async mode.
 	// Prevents memory overflow during traffic spikes or I/O slowdowns.
 	// Default: 1024 entries when async mode is enabled.
-	AsyncCacheSize int `mapstructure:"asynccachesize"`
+	AsyncCacheSize int `mapstructure:"asyncCacheSize"`
 
 	// AsyncWriteMillSec defines the async write interval in milliseconds.
 	// Balances between write latency and batch efficiency for optimal performance.
 	// Default: 200ms for reasonable trade-off between responsiveness and throughput.
-	AsyncWriteMillSec int `mapstructure:"asyncwritemillsec"`
+	AsyncWriteMillSec int `mapstructure:"asyncWriteMillSec"`
 
 	// LevelChangeMin enables dynamic minimum log level adjustment.
 	// Allows runtime log level changes for debugging or performance tuning.
-	LevelChangeMin int `mapstructure:"levelchangemin"`
+	LevelChangeMin int `mapstructure:"levelChangeMin"`
 
 	// CallerSkip specifies the number of stack frames to skip for caller information.
 	// Useful for wrapper functions or middleware layers in complex applications.
@@ -92,14 +92,15 @@ func (cfg *LogCfg) IsInWhiteList(actorID uint64) bool {
 }
 
 var _defaultCfg = &LogCfg{
-	LogPath:         "./asura.log",
-	LogLevel:        DebugLevel, // Default log level
-	FileSplitMB:     50,
-	FileSplitHour:   0,
-	IsAsync:         true,
-	CallerSkip:      1,
-	FileAppender:    true,
-	ConsoleAppender: true,
+	LogPath:           "./asura.log",
+	LogLevel:          DebugLevel, // Default log level
+	FileSplitMB:       50,
+	FileSplitHour:     0,
+	IsAsync:           true,
+	CallerSkip:        1,
+	FileAppender:      true,
+	ConsoleAppender:   true,
+	EnabledCallerInfo: true,
 }
 
 func getDefaultCfg() *LogCfg {

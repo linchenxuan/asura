@@ -434,11 +434,11 @@ func (e *LogEvent) Strs(k string, v []string) *LogEvent {
 
 // Err prints error value.
 // It safely handles nil errors by logging them as null values.
-func (e *LogEvent) Err(k string, v error) *LogEvent {
+func (e *LogEvent) Err(v error) *LogEvent {
 	if e == nil {
 		return nil
 	}
-	AppendKey(e.buf, k)
+	AppendKey(e.buf, "error")
 	if v != nil {
 		AppendString(e.buf, v.Error())
 	} else {
@@ -449,9 +449,9 @@ func (e *LogEvent) Err(k string, v error) *LogEvent {
 
 // Errs prints error list.
 // It logs multiple errors as an array, handling nil values appropriately.
-func (e *LogEvent) Errs(k string, v []error) *LogEvent {
+func (e *LogEvent) Errs(v []error) *LogEvent {
 	for _, err := range v {
-		_ = e.Err(k, err)
+		_ = e.Err(err)
 	}
 	return e
 }

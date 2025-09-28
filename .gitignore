@@ -1,1 +1,3 @@
-.trae/rules/project_rules.md
+.trae/
+.idea/
+*.log
