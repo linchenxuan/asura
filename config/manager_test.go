@@ -18,6 +18,16 @@ type TestConfig struct {
 	MaxConns int    `mapstructure:"maxConns"`
 }
 
+// TestChangeListener test configuration change listener
+// This is used to track configuration changes in tests
+type TestChangeListener struct {
+	mu             sync.Mutex
+	ChangeCount    int32
+	LastConfig     Config
+	LastOldConfig  Config
+	LastConfigName string
+}
+
 func (c *TestConfig) GetName() string {
 	return c.Name
 }
@@ -32,6 +42,41 @@ func (c *TestConfig) Validate() error {
 	if c.MaxConns <= 0 {
 		return fmt.Errorf("maxConns must be positive")
 	}
+	// Additional validation for specific test scenarios
+	if c.Port > 9000 && c.Name == "validation-server" {
+		return fmt.Errorf("port %d exceeds maximum allowed value", c.Port)
+	}
+	return nil
+}
+
+// OnConfigChanged implements ConfigChangeListener interface
+func (l *TestChangeListener) OnConfigChanged(configName string, newConfig, oldConfig Config) error {
+	atomic.AddInt32(&l.ChangeCount, 1)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.LastConfig = newConfig
+	l.LastOldConfig = oldConfig
+	l.LastConfigName = configName
+
+	// Simple validation to ensure oldConfig is valid
+	if oldConfig != nil {
+		oldTestConfig, ok := oldConfig.(*TestConfig)
+		if !ok {
+			return fmt.Errorf("invalid old config type")
+		}
+
+		// Ensure name and port are consistent (used in TestAtomicConfigUpdate)
+		var expectedPort int
+		if n, err := fmt.Sscanf(oldTestConfig.Name, "atomic-server-%d", &expectedPort); n == 1 && err == nil {
+			expectedPort += 8080
+			if oldTestConfig.Port != expectedPort {
+				return fmt.Errorf("config inconsistency in old value")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -128,7 +173,7 @@ func TestGetConfigNotFound(t *testing.T) {
 	}
 }
 
-// TestConfigValidator tests configuration validator
+// TestConfigValidator tests configuration validation
 func TestConfigValidator(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "invalid.yaml")
@@ -147,12 +192,6 @@ maxConns: -100
 	cm := NewConfigManager()
 	cm.SetBasePath(tmpDir)
 
-	// Register validator
-	cm.RegisterValidator("invalid", func(c Config) error {
-		testConfig := c.(*TestConfig)
-		return testConfig.Validate()
-	})
-
 	config := &TestConfig{}
 	err = cm.LoadConfig("invalid", config)
 	if err == nil {
@@ -160,8 +199,8 @@ maxConns: -100
 	}
 }
 
-// TestConfigHook tests configuration change hook
-func TestConfigHook(t *testing.T) {
+// TestConfigChangeListener tests configuration change notification mechanism
+func TestConfigChangeListener(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "hook.yaml")
 
@@ -178,19 +217,9 @@ maxConns: 100
 	cm := NewConfigManager()
 	cm.SetBasePath(tmpDir)
 
-	hookCalled := false
-	cm.RegisterHook("hook", func(oldVal, newVal Config) error {
-		hookCalled = true
-		// Simple validation to ensure hook is called
-		oldConfig := oldVal.(*TestConfig)
-		newConfig := newVal.(*TestConfig)
-
-		// Basic validation to ensure config objects are valid
-		if oldConfig == nil || newConfig == nil {
-			return fmt.Errorf("config objects are nil")
-		}
-		return nil
-	})
+	// Create and register a change listener
+	listener := &TestChangeListener{}
+	cm.AddChangeListener(listener)
 
 	config := &TestConfig{}
 	err = cm.LoadConfig("hook", config)
@@ -198,7 +227,7 @@ maxConns: 100
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	// Update configuration file to trigger hook
+	// Update configuration file to trigger config change
 	err = os.WriteFile(configFile, []byte(`
 name: "hook-server-updated"
 port: 9090
@@ -209,11 +238,46 @@ maxConns: 200
 		t.Fatalf("Failed to update config file: %v", err)
 	}
 
+	// Wait for file change detection and config reload
+	time.Sleep(200 * time.Millisecond)
+
+	// Check if the listener was notified
+	if atomic.LoadInt32(&listener.ChangeCount) != 1 {
+		t.Errorf("Expected ChangeCount 1, got %d", atomic.LoadInt32(&listener.ChangeCount))
+	}
+
+	// Check listener received the correct configuration data
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	if listener.LastConfigName != "hook" {
+		t.Errorf("Expected LastConfigName 'hook', got '%s'", listener.LastConfigName)
+	}
+
+	// Verify the last old config and new config
+	if listener.LastOldConfig == nil || listener.LastConfig == nil {
+		t.Error("Listener did not receive config objects")
+	}
+
+	// Test removing the listener
+	cm.RemoveChangeListener(listener)
+
+	// Update configuration file again
+	err = os.WriteFile(configFile, []byte(`
+name: "hook-server-final"
+port: 9191
+host: "localhost"
+maxConns: 300
+`), 0644)
+	if err != nil {
+		t.Fatalf("Failed to update config file: %v", err)
+	}
+
 	// Wait for file change detection
 	time.Sleep(200 * time.Millisecond)
 
-	if !hookCalled {
-		t.Error("Config hook was not called")
+	// ChangeCount should not increase after removing the listener
+	if atomic.LoadInt32(&listener.ChangeCount) != 1 {
+		t.Errorf("Expected ChangeCount still 1 after removing listener, got %d", atomic.LoadInt32(&listener.ChangeCount))
 	}
 }
 
@@ -631,7 +695,7 @@ maxConns: %d
 		atomic.LoadInt32(&accessCount), atomic.LoadInt32(&reloadCount), errorCount)
 }
 
-// TestConcurrentReloadWithValidation tests concurrent reload with validation hooks
+// TestConcurrentReloadWithValidation tests concurrent reload with validation
 func TestConcurrentReloadWithValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "validation.yaml")
@@ -649,17 +713,6 @@ maxConns: 100
 
 	cm := NewConfigManager()
 	cm.SetBasePath(tmpDir)
-
-	// Register validator that rejects certain configurations
-	validationErrors := make(chan string, 10)
-	cm.RegisterValidator("validation", func(c Config) error {
-		testConfig := c.(*TestConfig)
-		if testConfig.Port > 9000 {
-			validationErrors <- fmt.Sprintf("Port %d is too high", testConfig.Port)
-			return fmt.Errorf("port %d exceeds maximum allowed value", testConfig.Port)
-		}
-		return nil
-	})
 
 	config := &TestConfig{}
 	err = cm.LoadConfig("validation", config)
@@ -727,22 +780,10 @@ maxConns: %d
 
 	wg.Wait()
 	close(errors)
-	close(validationErrors)
 
 	// Check for errors
 	for err := range errors {
 		t.Error(err)
-	}
-
-	// Check validation errors (expected for some reload attempts)
-	validationErrorCount := 0
-	for errMsg := range validationErrors {
-		t.Logf("Expected validation error: %s", errMsg)
-		validationErrorCount++
-	}
-
-	if validationErrorCount == 0 {
-		t.Log("No validation errors occurred (may be expected depending on timing)")
 	}
 
 	// Final config should be valid
@@ -1349,21 +1390,15 @@ maxConns: 100
 	cm := NewConfigManager()
 	cm.SetBasePath(tmpDir)
 
+	// Create and register a change listener
+	listener := &TestChangeListener{}
+	cm.AddChangeListener(listener)
+
 	config := &TestConfig{}
 	err = cm.LoadConfig("partial", config)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-
-	// Register hook to track reloads
-	reloadCount := 0
-	var reloadMutex sync.Mutex
-	cm.RegisterHook("partial", func(oldVal, newVal Config) error {
-		reloadMutex.Lock()
-		reloadCount++
-		reloadMutex.Unlock()
-		return nil
-	})
 
 	// Perform partial file updates (simulating editor saves)
 	for i := 0; i < 5; i++ {
@@ -1395,22 +1430,28 @@ maxConns: %d
 	// Wait for all reloads to complete
 	time.Sleep(500 * time.Millisecond)
 
-	reloadMutex.Lock()
-	t.Logf("Partial update test: %d reloads detected", reloadCount)
-	reloadMutex.Unlock()
+	// Check if the listener was notified multiple times
+	t.Logf("Partial update test: %d reloads detected", atomic.LoadInt32(&listener.ChangeCount))
 
 	// Final config should be valid
-	finalConfig, err := cm.GetConfig("partial")
-	if err != nil {
-		t.Fatalf("GetConfig failed: %v", err)
+	finalConfig, err3 := cm.GetConfig("partial")
+	if err3 != nil {
+		t.Fatalf("GetConfig failed: %v", err3)
 	}
 
-	testConfig, ok := finalConfig.(*TestConfig)
+	finalTestConfig, ok := finalConfig.(*TestConfig)
 	if !ok {
 		t.Fatal("Final config has wrong type")
 	}
 
-	if testConfig.Port != 8084 {
-		t.Errorf("Expected final port 8084, got %d", testConfig.Port)
+	if finalTestConfig.Port != 8084 {
+		t.Errorf("Expected final port 8084, got %d", finalTestConfig.Port)
+	}
+
+	// Check last config name via listener
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	if listener.LastConfigName != "partial" {
+		t.Errorf("Expected LastConfigName 'partial', got '%s'", listener.LastConfigName)
 	}
 }

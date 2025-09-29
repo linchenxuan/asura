@@ -12,41 +12,31 @@ import (
 
 // ConfigManager interface for configuration management
 type ConfigManager interface {
+	ConfigChangeNotifier
 	LoadConfig(configName string, config Config) error
 	GetConfig(configName string) (Config, error)
-	RegisterValidator(configName string, validator ValidatorFunc)
-	RegisterHook(configName string, hook HookFunc)
 	SetBasePath(path string)
 	SetEnvironment(env string)
 	Close() error
 }
 
-// ValidatorFunc configuration validation function
-type ValidatorFunc func(Config) error
-
-// HookFunc configuration change hook function
-type HookFunc func(oldVal, newVal Config) error
-
 // configManager implementation of ConfigManager interface
 type configManager struct {
-	mu         sync.RWMutex
-	configs    map[string]Config
-	watchers   map[string]*fsnotify.Watcher
-	validators map[string]ValidatorFunc
-	hooks      map[string][]HookFunc
-	basePath   string
-	env        string
+	mu        sync.RWMutex
+	configs   map[string]Config
+	watchers  map[string]*fsnotify.Watcher
+	basePath  string
+	env       string
+	listeners []ConfigChangeListener
 }
 
 // NewConfigManager creates a new configuration manager
 func NewConfigManager() ConfigManager {
 	return &configManager{
-		configs:    make(map[string]Config),
-		watchers:   make(map[string]*fsnotify.Watcher),
-		validators: make(map[string]ValidatorFunc),
-		hooks:      make(map[string][]HookFunc),
-		basePath:   "./configs",
-		env:        "development",
+		configs:  make(map[string]Config),
+		watchers: make(map[string]*fsnotify.Watcher),
+		basePath: "./configs",
+		env:      "development",
 	}
 }
 
@@ -79,10 +69,8 @@ func (cm *configManager) LoadConfig(configName string, config Config) error {
 	}
 
 	// Validate configuration
-	if validator, exists := cm.validators[configName]; exists {
-		if err := validator(config); err != nil {
-			return fmt.Errorf("validate config failed: %w", err)
-		}
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("validate config failed: %w", err)
 	}
 
 	// Store configuration
@@ -104,20 +92,6 @@ func (cm *configManager) GetConfig(configName string) (Config, error) {
 	}
 
 	return config, nil
-}
-
-// RegisterValidator registers configuration validator
-func (cm *configManager) RegisterValidator(configName string, validator ValidatorFunc) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	cm.validators[configName] = validator
-}
-
-// RegisterHook registers configuration change hook
-func (cm *configManager) RegisterHook(configName string, hook HookFunc) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	cm.hooks[configName] = append(cm.hooks[configName], hook)
 }
 
 // SetBasePath sets base path for configuration files
@@ -203,27 +177,65 @@ func (cm *configManager) reloadConfig(configName string) {
 	}
 
 	// Validate new configuration
-	if validator, exists := cm.validators[configName]; exists {
-		if err := validator(newConfig); err != nil {
-			// Log validation error but don't panic - keep using old config
-			fmt.Printf("reloadConfig: validation failed for config %s: %v\n", configName, err)
+	if err := newConfig.Validate(); err != nil {
+		// Log validation error but don't panic - keep using old config
+		fmt.Printf("reloadConfig: validation failed for config %s: %v\n", configName, err)
+		return
+	}
+
+	// Replace map value (already protected by lock)
+	cm.configs[configName] = newConfig
+
+	// Notify all listeners about configuration change
+	cm.NotifyConfigChanged(configName, newConfig, oldConfig)
+}
+
+// AddChangeListener adds a configuration change listener
+func (cm *configManager) AddChangeListener(listener ConfigChangeListener) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// Check if listener already exists
+	for _, l := range cm.listeners {
+		if l == listener {
 			return
 		}
 	}
 
-	// Execute hook functions
-	if hooks, exists := cm.hooks[configName]; exists {
-		for _, hook := range hooks {
-			if err := hook(oldConfig, newConfig); err != nil {
-				// Log hook error but don't panic - keep using old config
-				fmt.Printf("reloadConfig: hook failed for config %s: %v\n", configName, err)
-				return
-			}
+	cm.listeners = append(cm.listeners, listener)
+}
+
+// RemoveChangeListener removes a configuration change listener
+func (cm *configManager) RemoveChangeListener(listener ConfigChangeListener) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	for i, l := range cm.listeners {
+		if l == listener {
+			cm.listeners = append(cm.listeners[:i], cm.listeners[i+1:]...)
+			return
+		}
+	}
+}
+
+// NotifyConfigChanged notifies all listeners about configuration change
+func (cm *configManager) NotifyConfigChanged(configName string, newConfig, oldConfig Config) {
+	// Make a copy of listeners to avoid holding the lock during notification
+	listenersCopy := make([]ConfigChangeListener, len(cm.listeners))
+	copy(listenersCopy, cm.listeners)
+
+	// Unlock before notifying to prevent deadlocks
+	cm.mu.Unlock()
+
+	// Notify each listener
+	for _, listener := range listenersCopy {
+		if err := listener.OnConfigChanged(configName, newConfig, oldConfig); err != nil {
+			fmt.Printf("NotifyConfigChanged: listener failed for config %s: %v\n", configName, err)
 		}
 	}
 
-	// Directly replace map value (already protected by lock)
-	cm.configs[configName] = newConfig
+	// Relock to restore original state
+	cm.mu.Lock()
 }
 
 // Close closes the configuration manager
