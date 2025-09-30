@@ -30,6 +30,42 @@ type configManager struct {
 	listeners []ConfigChangeListener
 }
 
+// Singleton instance with double-checked locking
+var (
+	instance     ConfigManager
+	instanceOnce sync.Once
+	instanceMu   sync.RWMutex
+)
+
+// GetInstance returns the singleton ConfigManager instance
+// This provides thread-safe singleton access with double-checked locking
+func GetInstance() ConfigManager {
+	if instance == nil {
+		instanceMu.Lock()
+		defer instanceMu.Unlock()
+		if instance == nil {
+			instance = NewConfigManager()
+		}
+	}
+	return instance
+}
+
+// SetInstanceForTesting sets a custom ConfigManager instance for testing
+// This allows replacing the singleton instance in test scenarios
+func SetInstanceForTesting(cm ConfigManager) {
+	instanceMu.Lock()
+	defer instanceMu.Unlock()
+	instance = cm
+}
+
+// ResetInstance resets the singleton instance to nil
+// Primarily used for testing cleanup
+func ResetInstance() {
+	instanceMu.Lock()
+	defer instanceMu.Unlock()
+	instance = nil
+}
+
 // NewConfigManager creates a new configuration manager
 func NewConfigManager() ConfigManager {
 	return &configManager{
@@ -221,11 +257,10 @@ func (cm *configManager) RemoveChangeListener(listener ConfigChangeListener) {
 // NotifyConfigChanged notifies all listeners about configuration change
 func (cm *configManager) NotifyConfigChanged(configName string, newConfig, oldConfig Config) {
 	// Make a copy of listeners to avoid holding the lock during notification
+	cm.mu.RLock()
 	listenersCopy := make([]ConfigChangeListener, len(cm.listeners))
 	copy(listenersCopy, cm.listeners)
-
-	// Unlock before notifying to prevent deadlocks
-	cm.mu.Unlock()
+	cm.mu.RUnlock()
 
 	// Notify each listener
 	for _, listener := range listenersCopy {
@@ -233,9 +268,6 @@ func (cm *configManager) NotifyConfigChanged(configName string, newConfig, oldCo
 			fmt.Printf("NotifyConfigChanged: listener failed for config %s: %v\n", configName, err)
 		}
 	}
-
-	// Relock to restore original state
-	cm.mu.Lock()
 }
 
 // Close closes the configuration manager

@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/lcx/asura/config"
 )
 
 const (
@@ -31,6 +33,8 @@ type FileAppender struct {
 	ntfChan           chan chan struct{} // Channel for notification and flush requests
 	asyncSendBuf      *bytes.Buffer      // Buffer for accumulating async writes
 	bufferPool        sync.Pool          // Pool for reusable buffers to avoid allocations
+	currentConfig     *LogCfg            // Current configuration for hot-reload support
+	configMutex       sync.RWMutex       // Mutex for thread-safe configuration updates
 }
 
 // NewFileAppender creates a new FileAppender instance with the specified configuration.
@@ -53,6 +57,145 @@ func NewFileAppender(cfg *LogCfg, l Logger) *FileAppender {
 	return a
 }
 
+// NewFileAppenderWithConfigManager creates a new FileAppender instance with configuration manager support.
+// This enables hot-reload functionality for dynamic configuration changes without service restart.
+//
+// Parameters:
+//   - configManager: Configuration manager instance for hot-reload support
+//   - l: Logger instance for event routing and fallback handling
+//
+// Returns: Newly created FileAppender instance with hot-reload capability
+func NewFileAppenderWithConfigManager(configManager config.ConfigManager, l Logger) *FileAppender {
+	a := &FileAppender{
+		logger: l,
+	}
+
+	// Get initial configuration from config manager
+	if configManager != nil {
+		// Register as configuration change listener for hot-reload
+		configManager.AddChangeListener(a)
+
+		// Get current configuration
+		if cfg, err := configManager.GetConfig("logger"); err == nil {
+			if logCfg, ok := cfg.(*LogCfg); ok {
+				if err := a.init(logCfg); err != nil {
+					panic(err)
+				}
+				return a
+			}
+		}
+	}
+
+	// Fallback to default configuration if config manager is not available or fails
+	if err := a.init(getDefaultCfg()); err != nil {
+		panic(err)
+	}
+	return a
+}
+
+// NewFileAppenderWithSingleton creates a new FileAppender instance using the singleton ConfigManager.
+// This provides a simplified constructor that uses the global configuration manager instance.
+//
+// Parameters:
+//   - l: Logger instance for event routing and fallback handling
+//
+// Returns: Newly created FileAppender instance with hot-reload capability
+func NewFileAppenderWithSingleton(l Logger) *FileAppender {
+	configManager := config.GetInstance()
+	return NewFileAppenderWithConfigManager(configManager, l)
+}
+
+// OnConfigChanged implements ConfigChangeListener interface for hot-reload support.
+// This method is called when the logger configuration changes, allowing for
+// dynamic updates to file path, rotation settings, and async behavior without
+// service restart.
+//
+// Parameters:
+//   - configName: Name of the configuration that changed
+//   - newConfig: New configuration instance
+//   - oldConfig: Previous configuration instance
+//
+// Returns:
+//   - Error if configuration update fails, nil otherwise
+func (a *FileAppender) OnConfigChanged(configName string, newConfig, oldConfig config.Config) error {
+	if configName != "logger" {
+		return nil // Ignore non-logger configuration changes
+	}
+
+	newLogCfg, ok := newConfig.(*LogCfg)
+	if !ok {
+		return nil // Ignore non-LogCfg configuration changes
+	}
+
+	// Update file appender configuration atomically
+	a.updateConfig(newLogCfg)
+	return nil
+}
+
+// updateConfig updates the file appender configuration with thread-safe atomic operations.
+// This method ensures that configuration changes are applied consistently
+// without affecting ongoing logging operations.
+//
+// Parameters:
+//   - newCfg: New logger configuration to apply
+func (a *FileAppender) updateConfig(newCfg *LogCfg) {
+	a.configMutex.Lock()
+	defer a.configMutex.Unlock()
+
+	// Check if file path has changed and close current file if needed
+	filePathChanged := a.fileName != newCfg.LogPath
+	if filePathChanged && a.fileFd != nil {
+		// Close current file before switching to new path
+		a.fileFd.Close()
+		a.fileFd = nil
+		a.fileCreateTime = time.Time{}
+	}
+
+	// Update configuration fields
+	a.fileName = newCfg.LogPath
+	a.isAsync = newCfg.IsAsync
+	a.asyncWriteMillSec = newCfg.AsyncWriteMillSec
+	a.fileSplitMB = newCfg.FileSplitMB
+	a.fileSplitHour = newCfg.FileSplitHour
+	a.currentConfig = newCfg
+
+	// Reinitialize async components if async mode changed
+	if a.isAsync && (a.bufChan == nil || a.ntfChan == nil) {
+		// Initialize instance-level buffer pool for zero-allocation performance
+		// Pre-allocates 1KB buffers to reduce GC pressure during high-frequency logging
+		a.bufferPool = sync.Pool{
+			New: func() interface{} {
+				return &bytes.Buffer{}
+			},
+		}
+
+		a.asyncSendBuf = bytes.NewBuffer(make([]byte, 0, _asyncByteSizePerIOWrite))
+
+		a.bufChan = make(chan *bytes.Buffer, newCfg.AsyncCacheSize)
+		a.ntfChan = make(chan chan struct{})
+		go a.asyncWriteLoop()
+	} else if !a.isAsync && a.bufChan != nil {
+		// If switching from async to sync mode, close async components
+		close(a.ntfChan)
+		a.bufChan = nil
+		a.ntfChan = nil
+		a.asyncSendBuf = nil
+		a.bufferPool = sync.Pool{}
+	}
+}
+
+// GetCurrentConfig returns the current file appender configuration.
+// This method provides thread-safe access to the current configuration
+// for inspection or debugging purposes.
+//
+// Returns:
+//   - Current file appender configuration
+func (a *FileAppender) GetCurrentConfig() *LogCfg {
+	a.configMutex.RLock()
+	defer a.configMutex.RUnlock()
+	return a.currentConfig
+}
+
 // init initializes the FileAppender with configuration parameters.
 // This method sets up file rotation parameters, async mode configuration, and buffer pools.
 // It validates the configuration first, then initializes all necessary components.
@@ -67,11 +210,16 @@ func (a *FileAppender) init(cfg *LogCfg) error {
 		return err
 	}
 
+	a.configMutex.Lock()
+	defer a.configMutex.Unlock()
+
 	a.fileName = cfg.LogPath
 	a.isAsync = cfg.IsAsync
 	a.asyncWriteMillSec = cfg.AsyncWriteMillSec
 	a.fileSplitMB = cfg.FileSplitMB
 	a.fileSplitHour = cfg.FileSplitHour
+	a.currentConfig = cfg
+
 	if cfg.IsAsync {
 		// Initialize instance-level buffer pool for zero-allocation performance
 		// Pre-allocates 1KB buffers to reduce GC pressure during high-frequency logging

@@ -4,7 +4,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
+
+	"github.com/lcx/asura/config"
 )
 
 // GameLogger provides a thread-safe logging interface with configurable appenders and formatting.
@@ -18,6 +22,7 @@ import (
 // - Automatic caller information capturing (file, function, line number)
 // - Efficient object pooling to minimize garbage collection pressure
 // - Per-file/per-line log level overrides for fine-grained control
+// - Hot-reload support for dynamic configuration changes without service restart
 //
 // Example usage:
 // ```
@@ -32,13 +37,16 @@ import (
 // logger.Info().Str("module", "server").Int("connections", 42).Msg("Server started successfully")
 // ```
 type GameLogger struct {
-	appenders         []LogAppender // Collection of appenders responsible for log output
-	minLevel          Level         // Minimum log level that will be processed
-	callerSkip        int           // Number of stack frames to skip when capturing caller information
-	eventPool         *sync.Pool    // Object pool for LogEvent instances to minimize GC
-	levelChange       *levelChange  // Configuration for per-file/per-line log level overrides
-	callerCache       sync.Map      // Cache for caller information to avoid redundant calculations
-	enabledCallerInfo bool          // Flag indicating whether caller information should be captured
+	appenders         []LogAppender        // Collection of appenders responsible for log output
+	minLevel          Level                // Minimum log level that will be processed
+	callerSkip        int                  // Number of stack frames to skip when capturing caller information
+	eventPool         *sync.Pool           // Object pool for LogEvent instances to minimize GC
+	levelChange       *levelChange         // Configuration for per-file/per-line log level overrides
+	callerCache       sync.Map             // Cache for caller information to avoid redundant calculations
+	enabledCallerInfo bool                 // Flag indicating whether caller information should be captured
+	configManager     config.ConfigManager // Configuration manager for hot-reload support
+	configMutex       sync.RWMutex         // Mutex for thread-safe configuration updates
+	currentConfig     *LogCfg              // Current configuration for fast access
 }
 
 // NewLogger creates a new GameLogger instance with the provided configuration.
@@ -63,6 +71,7 @@ func NewLogger(cfg *LogCfg) *GameLogger {
 		callerSkip:        cfg.CallerSkip,
 		levelChange:       newLevelChange(cfg.LevelChange),
 		enabledCallerInfo: cfg.EnabledCallerInfo,
+		currentConfig:     cfg,
 	}
 
 	// Initialize object pool for LogEvent instances to minimize garbage collection
@@ -82,6 +91,144 @@ func NewLogger(cfg *LogCfg) *GameLogger {
 	}
 
 	return logger
+}
+
+// NewLoggerWithConfigManager creates a new GameLogger instance with configuration manager support.
+// This enables hot-reload functionality for dynamic configuration changes without service restart.
+//
+// Parameters:
+//   - cfg: Logger configuration specifying log level, appenders, and other settings
+//   - configManager: Configuration manager instance for hot-reload support
+//
+// Returns:
+//   - A new GameLogger instance with hot-reload capability
+func NewLoggerWithConfigManager(cfg *LogCfg, configManager config.ConfigManager) *GameLogger {
+	logger := NewLogger(cfg)
+	logger.configManager = configManager
+
+	// Register as configuration change listener for hot-reload
+	if configManager != nil {
+		configManager.AddChangeListener(logger)
+
+		// Reconfigure appenders to use config manager for dynamic configuration
+		logger.reconfigureAppendersWithConfigManager(configManager)
+	}
+
+	return logger
+}
+
+// reconfigureAppendersWithConfigManager reconfigures all appenders to use the configuration manager
+// for dynamic configuration updates. This ensures that all appenders support hot-reload functionality.
+//
+// Parameters:
+//   - configManager: Configuration manager instance for hot-reload support
+func (x *GameLogger) reconfigureAppendersWithConfigManager(configManager config.ConfigManager) {
+	// Clear existing appenders
+	x.appenders = nil
+
+	// Get current configuration from config manager
+	if configManager != nil {
+		if cfg, err := configManager.GetConfig("logger"); err == nil {
+			if logCfg, ok := cfg.(*LogCfg); ok {
+				// Reconfigure appenders with config manager support
+				if logCfg.FileAppender {
+					x.AddAppender(NewFileAppenderWithConfigManager(configManager, x))
+				}
+
+				if logCfg.ConsoleAppender {
+					x.AddAppender(NewConsoleAppender())
+				}
+			}
+		}
+	}
+}
+
+// OnConfigChanged implements ConfigChangeListener interface for hot-reload support.
+// This method is called when the logger configuration changes, allowing for
+// dynamic updates without service restart.
+//
+// Parameters:
+//   - configName: Name of the configuration that changed
+//   - newConfig: New configuration instance
+//   - oldConfig: Previous configuration instance
+//
+// Returns:
+//   - Error if configuration update fails, nil otherwise
+func (x *GameLogger) OnConfigChanged(configName string, newConfig, oldConfig config.Config) error {
+	if configName != "logger" {
+		return nil // Ignore non-logger configuration changes
+	}
+
+	newLogCfg, ok := newConfig.(*LogCfg)
+	if !ok {
+		return nil // Ignore non-LogCfg configuration changes
+	}
+
+	// Update logger configuration atomically
+	x.updateConfig(newLogCfg)
+
+	// Notify all appenders about configuration change
+	for _, appender := range x.appenders {
+		if listener, ok := appender.(config.ConfigChangeListener); ok {
+			if err := listener.OnConfigChanged(configName, newConfig, oldConfig); err != nil {
+				// Log the error but continue notifying other appenders
+				x.Error().Err(err).Msg("Failed to notify appender about config change")
+			}
+		}
+	}
+
+	return nil
+}
+
+// updateConfig updates the logger configuration with thread-safe atomic operations.
+// This method ensures that configuration changes are applied consistently
+// without affecting ongoing logging operations.
+//
+// Parameters:
+//   - newCfg: New logger configuration to apply
+func (x *GameLogger) updateConfig(newCfg *LogCfg) {
+	x.configMutex.Lock()
+	defer x.configMutex.Unlock()
+
+	// Update configuration fields with atomic operations for thread safety
+	x.minLevel = newCfg.LogLevel
+	x.callerSkip = newCfg.CallerSkip
+	x.enabledCallerInfo = newCfg.EnabledCallerInfo
+	x.currentConfig = newCfg
+
+	// Update level change configuration
+	if newCfg.LevelChange != nil {
+		x.levelChange = newLevelChange(newCfg.LevelChange)
+	}
+
+	// Refresh appenders to apply new configuration
+	x.Refresh()
+}
+
+// GetCurrentConfig returns the current logger configuration.
+// This method provides thread-safe access to the current configuration
+// for inspection or debugging purposes.
+//
+// Returns:
+//   - Current logger configuration
+func (x *GameLogger) GetCurrentConfig() *LogCfg {
+	x.configMutex.RLock()
+	defer x.configMutex.RUnlock()
+	return x.currentConfig
+}
+
+// checkLevel determines if a log level should be logged based on the minimum level.
+// Returns true if the given level is equal to or higher than the minimum level.
+// This method uses atomic operations for thread-safe hot-reload support.
+//
+// Parameters:
+//   - level: The log level to check against the minimum threshold
+//
+// Returns:
+//   - Boolean indicating whether the level should be logged
+func (x *GameLogger) checkLevel(level Level) bool {
+	currentLevel := Level(atomic.LoadUint32((*uint32)(unsafe.Pointer(&x.minLevel))))
+	return currentLevel <= level
 }
 
 // AddAppender adds a new log appender to the logger. Appenders are responsible
@@ -212,18 +359,6 @@ func (x *GameLogger) Error() *LogEvent {
 //     or nil if fatal-level logging is not enabled
 func (x *GameLogger) Fatal() *LogEvent {
 	return x.log(FatalLevel)
-}
-
-// checkLevel determines if a log level should be logged based on the minimum level.
-// Returns true if the given level is equal to or higher than the minimum level.
-//
-// Parameters:
-//   - level: The log level to check against the minimum threshold
-//
-// Returns:
-//   - Boolean indicating whether the level should be logged
-func (x *GameLogger) checkLevel(level Level) bool {
-	return x.minLevel <= level
 }
 
 // getCallerInfo retrieves runtime information about the caller of the logging function.

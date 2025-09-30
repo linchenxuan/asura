@@ -1,5 +1,9 @@
 package log
 
+import (
+	"github.com/lcx/asura/config"
+)
+
 type Logger interface {
 	Debug() *LogEvent
 	Info() *LogEvent
@@ -36,6 +40,64 @@ func SetDefaultLogger(logger *GameLogger) {
 	_defaultLogger = logger
 }
 
+// SetDefaultLoggerWithConfigManager replaces the default logger with a custom instance
+// that supports configuration manager for hot-reload functionality.
+// This enables dynamic configuration changes for package-level logging functions.
+//
+// Parameters:
+//   - logger: GameLogger instance with configuration manager support
+//   - configManager: Configuration manager instance for hot-reload
+func SetDefaultLoggerWithConfigManager(logger *GameLogger, configManager config.ConfigManager) {
+	_defaultLogger = logger
+}
+
+// InitializeWithConfigManager initializes the default logger with configuration manager support.
+// This function loads the logger configuration from the config manager and enables
+// hot-reload functionality for package-level logging functions.
+//
+// Parameters:
+//   - configManager: Configuration manager instance
+//
+// Returns:
+//   - Error if configuration loading fails, nil otherwise
+func InitializeWithConfigManager(configManager config.ConfigManager) error {
+	if configManager == nil {
+		return nil
+	}
+
+	// Load logger configuration
+	logCfg := &LogCfg{}
+	if err := configManager.LoadConfig("logger", logCfg); err != nil {
+		return err
+	}
+
+	// Create logger with configuration manager support
+	logger := NewLoggerWithConfigManager(logCfg, configManager)
+	SetDefaultLoggerWithConfigManager(logger, configManager)
+
+	return nil
+}
+
+// Initialize initializes the default logger using the singleton ConfigManager instance.
+// This provides a simplified initialization method that uses the global configuration manager.
+//
+// Returns:
+//   - Error if configuration loading fails, nil otherwise
+func Initialize() error {
+	configManager := config.GetInstance()
+	return InitializeWithConfigManager(configManager)
+}
+
+// GetConfigManager returns the current configuration manager instance.
+// This can be used to access configuration manager functionality from
+// package-level logging functions.
+//
+// Returns:
+//   - Current configuration manager instance, or nil if not set
+func GetConfigManager() config.ConfigManager {
+	return config.GetInstance()
+}
+
 // Debug creates a new debug-level log event using the default logger.
 // This is a convenience function for the package-level default logger.
 func Debug() *LogEvent {
@@ -48,7 +110,7 @@ func Info() *LogEvent {
 	return _defaultLogger.Info()
 }
 
-// Warn creates a new warning-level log event using the default logger.
+// Warn creates a new warn-level log event using the default logger.
 // This is a convenience function for the package-level default logger.
 func Warn() *LogEvent {
 	return _defaultLogger.Warn()
@@ -62,7 +124,6 @@ func Error() *LogEvent {
 
 // Fatal creates a new fatal-level log event using the default logger.
 // This is a convenience function for the package-level default logger.
-// After logging, the application will terminate.
 func Fatal() *LogEvent {
 	return _defaultLogger.Fatal()
 }

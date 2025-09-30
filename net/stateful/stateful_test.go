@@ -11,6 +11,18 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// createTestConfig creates a test configuration for stateful layer testing
+func createTestConfig() *StatefulConfig {
+	return &StatefulConfig{
+		TickPeriodMillSec:   20 * 1000, // 20 seconds
+		GrHBTimeoutSec:      10,        // 10 seconds
+		BroadcastQPS:        10000,     // 10,000 notifications per second
+		BroadcastMaxWaitNum: 10,        // Queue up to 10 pending messages
+		MaxActorCount:       5000,      // Allow up to 5000 concurrent actors
+		MigrateFeatSwitch:   false,     // Migration feature disabled by default
+	}
+}
+
 // MockActor implements the Actor interface for testing
 type MockActor struct {
 	ActorBase
@@ -90,25 +102,22 @@ func (m *MockActor) OnEventEnd(e *log.LogEvent) {
 
 func TestNewMsgLayer(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	layer := NewMsgLayer(nil, msgMgr, nil, nil, nil)
-	assert.NotNil(t, layer)
-	assert.NotNil(t, layer.StatefulConfig)
-	assert.NotNil(t, layer.actorMgr)
+	layer, err := NewMsgLayer(nil, msgMgr, nil, nil, nil)
+	assert.Error(t, err) // Should return error for nil config
+	assert.Nil(t, layer)
 }
 
 func TestStatefulMsgLayer_Init(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	layer := NewMsgLayer(nil, msgMgr, nil, nil, nil)
-
-	// Test with default config
-	err := layer.Init()
-	assert.NoError(t, err)
+	layer, err := NewMsgLayer(nil, msgMgr, nil, nil, nil)
+	assert.Error(t, err) // Should return error for nil config
 
 	// Test with custom config
-	customConfig := getDefaultConfig()
+	customConfig := createTestConfig()
 	customConfig.ActorLifeSecond = 3600
 	customConfig.TickPeriodMillSec = 1000
-	layer.StatefulConfig = customConfig
+	layer, err = NewMsgLayer(customConfig, msgMgr, nil, nil, nil)
+	assert.NoError(t, err)
 
 	err = layer.Init()
 	assert.NoError(t, err)
@@ -129,8 +138,9 @@ func TestStatefulMsgLayer_PostPkgLocal_ActorCreationError(t *testing.T) {
 		return nil, errors.New("creation failed")
 	}
 
-	layer := NewMsgLayer(getDefaultConfig(), msgMgr, actorCreator, nil, nil)
-	err := layer.Init()
+	layer, err := NewMsgLayer(createTestConfig(), msgMgr, actorCreator, nil, nil)
+	assert.NoError(t, err)
+	err = layer.Init()
 	assert.NoError(t, err)
 
 	// Test actor creation error by directly calling createActor
@@ -149,7 +159,8 @@ func TestStatefulMsgLayer_PostPkgLocal_ActorCreationError(t *testing.T) {
 
 func TestActorRuntime_HandlePkg(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	layer := NewMsgLayer(getDefaultConfig(), msgMgr, nil, nil, nil)
+	layer, err := NewMsgLayer(createTestConfig(), msgMgr, nil, nil, nil)
+	assert.NoError(t, err)
 
 	mockActor := &MockActor{}
 	runtime := newActorRuntime(layer, 12345, mockActor)
@@ -173,15 +184,16 @@ func TestActorRuntime_HandlePkg(t *testing.T) {
 		Logger:  mockActor,
 	}
 
-	err := runtime.handlePkg(hCtx)
+	err = runtime.handlePkg(hCtx)
 	assert.NoError(t, err)
 }
 
 func TestActorRuntime_Tick(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	config := getDefaultConfig()
+	config := createTestConfig()
 	config.SaveCategory.FreqSaveSecond = 1
-	layer := NewMsgLayer(config, msgMgr, nil, nil, nil)
+	layer, err := NewMsgLayer(config, msgMgr, nil, nil, nil)
+	assert.NoError(t, err)
 
 	mockActor := &MockActor{}
 	runtime := newActorRuntime(layer, 12345, mockActor)
@@ -196,7 +208,8 @@ func TestActorRuntime_Tick(t *testing.T) {
 
 func TestActorRuntime_ExitActor(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	layer := NewMsgLayer(getDefaultConfig(), msgMgr, nil, nil, nil)
+	layer, err := NewMsgLayer(createTestConfig(), msgMgr, nil, nil, nil)
+	assert.NoError(t, err)
 
 	mockActor := &MockActor{}
 	runtime := newActorRuntime(layer, 12345, mockActor)
@@ -215,7 +228,8 @@ func TestActorRuntime_ExitActor(t *testing.T) {
 
 func TestHandleContext(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	layer := NewMsgLayer(getDefaultConfig(), msgMgr, nil, nil, nil)
+	layer, err := NewMsgLayer(createTestConfig(), msgMgr, nil, nil, nil)
+	assert.NoError(t, err)
 
 	// Create a mock handle context
 	pkg := net.NewTransRecvPkgWithBody(nil, &net.PkgHead{MsgID: "test_msg"}, &net.PkgHead{})
@@ -245,7 +259,8 @@ func TestHandleContext(t *testing.T) {
 
 func TestActorMgr(t *testing.T) {
 	msgMgr := net.NewMessageManager()
-	layer := NewMsgLayer(getDefaultConfig(), msgMgr, nil, nil, nil)
+	layer, err := NewMsgLayer(createTestConfig(), msgMgr, nil, nil, nil)
+	assert.NoError(t, err)
 
 	mockActor := &MockActor{}
 	creator := func(uid uint64) (Actor, error) {

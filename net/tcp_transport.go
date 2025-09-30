@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
 )
 
@@ -25,6 +27,28 @@ type TCPTransportCfg struct {
 	MaxBufferSize   int    `mapstructure:"maxBufferSize"`
 }
 
+// GetName returns the configuration name for TCPTransportCfg
+func (c *TCPTransportCfg) GetName() string {
+	return "tcp_transport"
+}
+
+// Validate validates the TCPTransportCfg parameters
+func (c *TCPTransportCfg) Validate() error {
+	if c.Addr == "" {
+		return fmt.Errorf("Addr cannot be empty")
+	}
+	if c.MaxBufferSize <= 0 {
+		return fmt.Errorf("MaxBufferSize must be positive")
+	}
+	if c.SendChannelSize <= 0 {
+		return fmt.Errorf("SendChannelSize must be positive")
+	}
+	if c.IdleTimeout <= 0 {
+		return fmt.Errorf("IdleTimeout must be positive")
+	}
+	return nil
+}
+
 // TCPTransport a transport plugin based on tcp, ervey connection will be alloc a goroutine.
 type TCPTransport struct {
 	*TCPTransportCfg
@@ -35,9 +59,76 @@ type TCPTransport struct {
 	cancel    context.CancelFunc
 }
 
-func NewTCPTransport() *TCPTransport {
+// NewTCPTransportWithConfigManager creates a TCPTransport that supports configuration hot-reload.
+// This constructor initializes the transport with configuration from the config manager
+// and registers it as a configuration change listener for dynamic updates.
+func NewTCPTransportWithConfigManager(configManager config.ConfigManager) (*TCPTransport, error) {
+	if configManager == nil {
+		return nil, errors.New("configManager cannot be nil")
+	}
+
+	// Load configuration from config manager
+	cfg := &TCPTransportCfg{}
+	if err := configManager.LoadConfig("tcp_transport", cfg); err != nil {
+		return nil, fmt.Errorf("failed to load tcp_transport config: %w", err)
+	}
+
+	transport := &TCPTransport{
+		TCPTransportCfg: cfg,
+		uidToConn:       make(map[uint64]*tcpctx),
+		lock:            sync.RWMutex{},
+	}
+
+	// Register as configuration change listener
+	configManager.AddChangeListener(transport)
+
+	return transport, nil
+}
+
+// OnConfigChanged implements the ConfigChangeListener interface for TCPTransport.
+// This method is called when the TCP transport configuration is updated in the config manager.
+// It handles dynamic updates to transport settings without requiring service restart.
+func (t *TCPTransport) OnConfigChanged(configName string, newConfig, oldConfig config.Config) error {
+	if configName != "tcp_transport" {
+		return nil
+	}
+
+	newCfg, ok := newConfig.(*TCPTransportCfg)
+	if !ok {
+		return fmt.Errorf("invalid configuration type for TCPTransport")
+	}
+
+	// Validate the new configuration
+	if err := newCfg.Validate(); err != nil {
+		return fmt.Errorf("invalid TCP transport configuration: %w", err)
+	}
+
+	// Update configuration atomically
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	// Update configuration fields
+	t.TCPTransportCfg = newCfg
+
+	log.Info().Str("configName", configName).Msg("TCP transport configuration updated successfully")
+	return nil
+}
+
+// GetConfigName implements the ConfigChangeListener interface for TCPTransport.
+// Returns the configuration name that this listener is interested in.
+func (t *TCPTransport) GetConfigName() string {
+	return "tcp_transport"
+}
+
+func NewTCPTransport() (*TCPTransport, error) {
+	return nil, errors.New("TCPTransportCfg cannot be nil, use NewTCPTransportWithConfig or NewTCPTransportWithConfigManager for dynamic configuration")
+}
+
+// NewTCPTransportWithConfig creates a TCPTransport with the provided configuration.
+// This constructor allows for explicit configuration of the transport instance.
+func NewTCPTransportWithConfig(cfg *TCPTransportCfg) *TCPTransport {
 	return &TCPTransport{
-		TCPTransportCfg: &TCPTransportCfg{},
+		TCPTransportCfg: cfg,
 		uidToConn:       make(map[uint64]*tcpctx),
 		lock:            sync.RWMutex{},
 	}

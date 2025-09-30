@@ -1,0 +1,18 @@
+# Dispatcher Configuration
+# This file configures the message dispatcher for the Asura game server framework
+
+# Maximum number of messages to receive per second
+# Supports hot reloading - changes take effect immediately
+recvRateLimit: 20000
+
+# Initial token bucket size for burst handling
+# Allows handling of short-term traffic spikes
+tokenBurst: 1000
+
+# Message filtering configuration
+# Messages listed here will be intercepted by the filtering mechanism
+msgFilter:
+  msgFilter:
+    - "system.maintenance"
+    - "admin.broadcast"
+    - "debug.monitor"

@@ -239,7 +239,8 @@ maxConns: 200
 	}
 
 	// Wait for file change detection and config reload
-	time.Sleep(200 * time.Millisecond)
+	// Increase wait time for Windows file system
+	time.Sleep(2 * time.Second)
 
 	// Check if the listener was notified
 	if atomic.LoadInt32(&listener.ChangeCount) != 1 {
@@ -273,11 +274,11 @@ maxConns: 300
 	}
 
 	// Wait for file change detection
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
-	// ChangeCount should not increase after removing the listener
+	// Verify listener was not notified after removal
 	if atomic.LoadInt32(&listener.ChangeCount) != 1 {
-		t.Errorf("Expected ChangeCount still 1 after removing listener, got %d", atomic.LoadInt32(&listener.ChangeCount))
+		t.Errorf("Expected ChangeCount to remain 1 after listener removal, got %d", atomic.LoadInt32(&listener.ChangeCount))
 	}
 }
 
@@ -670,6 +671,8 @@ maxConns: %d
 				time.Sleep(time.Millisecond * 10) // Very short delay for high frequency
 			}
 		}(i)
+	}
+
 	}
 
 	wg.Wait()
@@ -1455,3 +1458,4 @@ maxConns: %d
 		t.Errorf("Expected LastConfigName 'partial', got '%s'", listener.LastConfigName)
 	}
 }
+

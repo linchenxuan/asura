@@ -1,5 +1,10 @@
 package log
 
+import (
+	"fmt"
+	"path/filepath"
+)
+
 // LogCfg represents comprehensive logging configuration for high-performance game servers.
 // It provides flexible configuration options for both synchronous and asynchronous logging,
 // file rotation strategies, and output destinations suitable for production environments.
@@ -75,6 +80,79 @@ type LogCfg struct {
 	ActorFileLog bool `mapstructure:"actorFileLog"`
 
 	EnabledCallerInfo bool `mapstructure:"enabledCallerInfo"`
+}
+
+// GetName returns the configuration name for Config interface implementation.
+// This enables LogCfg to be managed by the ConfigManager for hot-reload functionality.
+func (cfg *LogCfg) GetName() string {
+	return "logger"
+}
+
+// Validate validates the logging configuration for correctness and consistency.
+// This method is required for Config interface implementation and ensures
+// that configuration changes are safe to apply during hot-reload operations.
+func (cfg *LogCfg) Validate() error {
+	// Validate log level
+	if cfg.LogLevel < TraceLevel || cfg.LogLevel > FatalLevel {
+		return fmt.Errorf("invalid log level: %d, must be between %d (Trace) and %d (Fatal)",
+			cfg.LogLevel, TraceLevel, FatalLevel)
+	}
+
+	// Validate file split size
+	if cfg.FileSplitMB < 1 || cfg.FileSplitMB > 1024 {
+		return fmt.Errorf("file split size must be between 1MB and 1024MB, got %dMB", cfg.FileSplitMB)
+	}
+
+	// Validate file split hour
+	if cfg.FileSplitHour < 0 || cfg.FileSplitHour > 23 {
+		return fmt.Errorf("file split hour must be between 0 and 23, got %d", cfg.FileSplitHour)
+	}
+
+	// Validate async cache size
+	if cfg.IsAsync && cfg.AsyncCacheSize < 1 {
+		return fmt.Errorf("async cache size must be at least 1 when async mode is enabled, got %d", cfg.AsyncCacheSize)
+	}
+
+	// Validate async write interval
+	if cfg.IsAsync && cfg.AsyncWriteMillSec < 10 {
+		return fmt.Errorf("async write interval must be at least 10ms, got %dms", cfg.AsyncWriteMillSec)
+	}
+
+	// Validate caller skip
+	if cfg.CallerSkip < 0 {
+		return fmt.Errorf("caller skip must be non-negative, got %d", cfg.CallerSkip)
+	}
+
+	// Validate log path for file appender
+	if cfg.FileAppender && cfg.LogPath == "" {
+		return fmt.Errorf("log path cannot be empty when file appender is enabled")
+	}
+
+	// Validate log path format
+	if cfg.FileAppender && cfg.LogPath != "" {
+		if !filepath.IsAbs(cfg.LogPath) && filepath.IsAbs(filepath.Clean(cfg.LogPath)) {
+			// This is a relative path that would become absolute after cleaning
+			// We want to ensure we're using a clean path
+			cfg.LogPath = filepath.Clean(cfg.LogPath)
+		}
+	}
+
+	// Validate that at least one appender is enabled
+	if !cfg.FileAppender && !cfg.ConsoleAppender {
+		return fmt.Errorf("at least one appender (file or console) must be enabled")
+	}
+
+	// Rebuild whitelist set for consistency
+	if len(cfg.ActorWhiteList) > 0 {
+		cfg.actorWhiteListSet = make(map[uint64]struct{}, len(cfg.ActorWhiteList))
+		for _, id := range cfg.ActorWhiteList {
+			cfg.actorWhiteListSet[id] = struct{}{}
+		}
+	} else {
+		cfg.actorWhiteListSet = nil
+	}
+
+	return nil
 }
 
 // IsInWhiteList checks if an actor ID exists in the whitelist with O(1) complexity.

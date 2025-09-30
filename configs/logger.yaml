@@ -1,0 +1,48 @@
+# Logger Configuration for Asura Game Server
+# This configuration supports hot-reload functionality for dynamic adjustments
+# without requiring server restart.
+
+# Log file path - supports relative and absolute paths
+path: "./logs/asura.log"
+
+# Log level - supports Trace, Debug, Info, Warn, Error, Fatal
+# Hot-reload: Changing this value will immediately affect log filtering
+level: Info
+
+# File rotation settings
+splitMB: 50          # Rotate when file reaches 50MB
+splitHour: 0         # Rotate daily at midnight (0-23)
+
+# Asynchronous logging settings for high-performance game servers
+isAsync: true        # Enable async logging to prevent I/O blocking
+asyncCacheSize: 1024 # Maximum buffered log entries in async mode
+asyncWriteMillSec: 200 # Async write interval in milliseconds
+
+# Caller information settings
+callerSkip: 1        # Number of stack frames to skip for caller info
+enabledCallerInfo: true # Enable caller information in log output
+
+# Appender configuration
+fileAppender: true    # Enable file-based logging
+consoleAppender: true # Enable console output (useful for development)
+
+# Fine-grained log level control for specific code locations
+# Hot-reload: Adding/removing entries will immediately affect specific files/lines
+levelChange:
+  - file: "battle/combat.go"
+    line: 42
+    level: Debug
+  - file: "network/connection.go" 
+    line: 156
+    level: Trace
+
+# Actor whitelist for targeted debugging
+# Hot-reload: Adding/removing actor IDs will immediately affect log filtering
+actorWhiteList: [123456789, 987654321]
+
+# Actor-specific file logging
+actorFileLog: false  # Enable separate log files for specific actors
+
+# Environment-specific overrides can be placed in:
+# configs/development/logger.yaml
+# configs/production/logger.yaml

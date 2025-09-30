@@ -512,20 +512,6 @@ func TestDispatcherConcurrency(t *testing.T) {
 	}
 }
 
-// TestGetDefaultConfig tests default configuration
-func TestGetDefaultConfig(t *testing.T) {
-	cfg := getDefaultConfig()
-	if cfg == nil {
-		t.Fatal("getDefaultConfig() returned nil")
-	}
-	if cfg.RecvRateLimit != 20000 {
-		t.Errorf("Default RecvRateLimit = %v, want %v", cfg.RecvRateLimit, 20000)
-	}
-	if cfg.TokenBurst != 1000 {
-		t.Errorf("Default TokenBurst = %v, want %v", cfg.TokenBurst, 1000)
-	}
-}
-
 // TestCheckParamValid tests parameter validation
 func TestCheckParamValid(t *testing.T) {
 	tests := []struct {

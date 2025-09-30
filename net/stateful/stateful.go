@@ -4,8 +4,11 @@
 package stateful
 
 import (
+	"errors"
 	"fmt"
+	"sync"
 
+	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
 	"github.com/lcx/asura/net"
 	"google.golang.org/protobuf/proto"
@@ -27,15 +30,50 @@ type StatefulMsgLayer struct {
 	ssTransport     net.SSTransport     // Server-server transport layer
 	actorMgr        *actorMgr           // Actor manager for lifecycle operations
 	msgMgr          *net.MessageManager // Message manager for protocol handling
+	lock            sync.RWMutex        // Protects configuration updates
+}
+
+// OnConfigChanged implements the ConfigChangeListener interface for StatefulMsgLayer.
+// This method is called when the stateful configuration is updated in the config manager.
+// It handles dynamic updates to stateful layer settings without requiring service restart.
+func (layer *StatefulMsgLayer) OnConfigChanged(configName string, newConfig, oldConfig config.Config) error {
+	if configName != "stateful" {
+		return nil
+	}
+
+	newCfg, ok := newConfig.(*StatefulConfig)
+	if !ok {
+		return fmt.Errorf("invalid configuration type for StatefulMsgLayer")
+	}
+
+	// Validate the new configuration
+	if err := newCfg.Validate(); err != nil {
+		return fmt.Errorf("invalid stateful configuration: %w", err)
+	}
+
+	// Update configuration atomically
+	layer.lock.Lock()
+	defer layer.lock.Unlock()
+
+	// Update configuration fields
+	layer.StatefulConfig = newCfg
+
+	log.Info().Str("configName", configName).Msg("Stateful message layer configuration updated successfully")
+	return nil
+}
+
+// GetConfigName implements the ConfigChangeListener interface for StatefulMsgLayer.
+// Returns the configuration name that this listener is interested in.
+func (layer *StatefulMsgLayer) GetConfigName() string {
+	return "stateful"
 }
 
 // NewMsgLayer creates a new stateful message layer instance.
 // It initializes the layer with provided configuration, message manager, actor creator,
-// and transport layers. If config is nil, it uses default configuration.
-func NewMsgLayer(cfg *StatefulConfig, msgMgr *net.MessageManager, creator ActorCreator, cs net.CSTransport, ss net.SSTransport) *StatefulMsgLayer {
-
+// and transport layers. If config is nil, it returns nil.
+func NewMsgLayer(cfg *StatefulConfig, msgMgr *net.MessageManager, creator ActorCreator, cs net.CSTransport, ss net.SSTransport) (*StatefulMsgLayer, error) {
 	if cfg == nil {
-		cfg = getDefaultConfig()
+		return nil, errors.New("StatefulConfig cannot be nil, use NewMsgLayerWithConfigManager for dynamic configuration")
 	}
 
 	layer := &StatefulMsgLayer{
@@ -44,9 +82,39 @@ func NewMsgLayer(cfg *StatefulConfig, msgMgr *net.MessageManager, creator ActorC
 		ssTransport:    ss,
 		actorMgr:       newActorMgr(creator),
 		msgMgr:         msgMgr,
+		lock:           sync.RWMutex{},
 	}
 
-	return layer
+	return layer, nil
+}
+
+// NewMsgLayerWithConfigManager creates a stateful message layer that supports configuration hot-reload.
+// This constructor initializes the layer with configuration from the config manager
+// and registers it as a configuration change listener for dynamic updates.
+func NewMsgLayerWithConfigManager(configManager config.ConfigManager, msgMgr *net.MessageManager, creator ActorCreator, cs net.CSTransport, ss net.SSTransport) (*StatefulMsgLayer, error) {
+	if configManager == nil {
+		return nil, errors.New("configManager cannot be nil")
+	}
+
+	// Load configuration from config manager
+	cfg := &StatefulConfig{}
+	if err := configManager.LoadConfig("stateful", cfg); err != nil {
+		return nil, fmt.Errorf("failed to load stateful config: %w", err)
+	}
+
+	layer := &StatefulMsgLayer{
+		StatefulConfig: cfg,
+		csTransport:    cs,
+		ssTransport:    ss,
+		actorMgr:       newActorMgr(creator),
+		msgMgr:         msgMgr,
+		lock:           sync.RWMutex{},
+	}
+
+	// Register as configuration change listener
+	configManager.AddChangeListener(layer)
+
+	return layer, nil
 }
 
 // Init initializes the stateful message layer.

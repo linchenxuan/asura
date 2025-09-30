@@ -19,6 +19,11 @@ package net
 
 import (
 	"errors"
+	"fmt"
+	"sync"
+
+	"github.com/lcx/asura/config"
+	"github.com/lcx/asura/log"
 )
 
 // DispatcherDelivery extends TransportDelivery to include protocol information and response options
@@ -30,7 +35,7 @@ import (
 // methods for accessing common message properties and sending error responses.
 //
 // Fields:
-// - TransportDelivery: Embedded transport delivery information including package data
+// - TransportDelivery: Embedded transport delivery containing raw package data
 // - ProtoInfo: Protocol metadata for the current message
 // - ResOpts: Optional parameters for response message construction
 //
@@ -131,6 +136,27 @@ type MsgLayerReceiver interface {
 	OnRecvDispatcherPkg(*DispatcherDelivery) error
 }
 
+// MsgFilterPluginCfg defines configuration for the message filter plugin.
+// It contains a list of message IDs that should be filtered by the dispatcher.
+//
+// This configuration structure is typically populated from application settings
+// and used to control which messages should be intercepted by the filtering mechanism.
+type MsgFilterPluginCfg struct {
+	MsgFilter []string `mapstructure:"msgFilter"`
+}
+
+// GetName returns the configuration name for MsgFilterPluginCfg
+func (c *MsgFilterPluginCfg) GetName() string {
+	return "msg_filter"
+}
+
+// Validate validates the MsgFilterPluginCfg parameters
+func (c *MsgFilterPluginCfg) Validate() error {
+	// MsgFilter can be empty (no filtering) or contain valid message IDs
+	// No specific validation needed for the filter list itself
+	return nil
+}
+
 // DispatcherConfig contains configuration parameters for the dispatcher
 // Uses token bucket algorithm for rate limiting instead of the previous funnel algorithm
 // Controls message processing behavior, rate limits, and filtering options
@@ -149,7 +175,29 @@ type MsgLayerReceiver interface {
 type DispatcherConfig struct {
 	RecvRateLimit int                `mapstructure:"recvRateLimit"`
 	TokenBurst    int                `mapstructure:"tokenBurst"`
-	MsgFilter     msgFilterPluginCfg `mapstructure:"msgFilter"`
+	MsgFilter     MsgFilterPluginCfg `mapstructure:"msgFilter"`
+}
+
+// GetName returns the configuration name for DispatcherConfig
+func (c *DispatcherConfig) GetName() string {
+	return "dispatcher"
+}
+
+// Validate validates the DispatcherConfig parameters
+func (c *DispatcherConfig) Validate() error {
+	if c.RecvRateLimit <= 0 {
+		return fmt.Errorf("RecvRateLimit must be positive")
+	}
+	if c.TokenBurst <= 0 {
+		return fmt.Errorf("TokenBurst must be positive")
+	}
+	if c.RecvRateLimit > 1000000 {
+		return fmt.Errorf("RecvRateLimit cannot exceed 1,000,000 messages per second")
+	}
+	if c.TokenBurst > c.RecvRateLimit*10 {
+		return fmt.Errorf("TokenBurst cannot exceed 10 times RecvRateLimit")
+	}
+	return nil
 }
 
 // Dispatcher is the central message processing hub in the networking system
@@ -190,6 +238,8 @@ type Dispatcher struct {
 	filters      DispatcherFilterChain             // Chain of message filters
 	msgFilterMap map[string]struct{}               // Map of filtered message IDs
 	msgMgr       *MessageManager                   // Message manager for protocol info lookup
+	config       *DispatcherConfig                 // Configuration for the dispatcher
+	lock         sync.RWMutex                      // Protects configuration updates
 }
 
 // NewDispatcher creates a new dispatcher instance with specified configuration
@@ -217,12 +267,7 @@ type Dispatcher struct {
 // Reference: <mcfile name="dispatcher.go" path="/root/asura/net/dispatcher.go"></mcfile>
 func NewDispatcher(cfg *DispatcherConfig, msgMgr *MessageManager, trans []Transport) (*Dispatcher, error) {
 	if cfg == nil {
-		cfg = getDefaultConfig()
-	}
-
-	// 检查参数的有效性
-	if err := checkParamValid(cfg); err != nil {
-		return nil, err
+		return nil, errors.New("DispatcherConfig cannot be nil, use NewDispatcherWithConfigManager for dynamic configuration")
 	}
 
 	d := &Dispatcher{
@@ -231,6 +276,8 @@ func NewDispatcher(cfg *DispatcherConfig, msgMgr *MessageManager, trans []Transp
 		recvLimiter:  NewTokenRecvLimiter(cfg.RecvRateLimit, cfg.TokenBurst),
 		msgFilterMap: make(map[string]struct{}),
 		msgMgr:       msgMgr,
+		config:       cfg,
+		lock:         sync.RWMutex{},
 	}
 
 	d.reloadMsgFilterCfg(&cfg.MsgFilter)
@@ -239,6 +286,82 @@ func NewDispatcher(cfg *DispatcherConfig, msgMgr *MessageManager, trans []Transp
 	d.filters = append(d.filters, d.recvLimiter.recvLimiterFilter)
 
 	return d, nil
+}
+
+// NewDispatcherWithConfigManager creates a dispatcher that supports configuration hot-reload.
+// This constructor initializes the dispatcher with configuration from the config manager
+// and registers it as a configuration change listener for dynamic updates.
+func NewDispatcherWithConfigManager(configManager config.ConfigManager, msgMgr *MessageManager, trans []Transport) (*Dispatcher, error) {
+	if configManager == nil {
+		return nil, errors.New("configManager cannot be nil")
+	}
+
+	// Load configuration from config manager
+	cfg := &DispatcherConfig{}
+	if err := configManager.LoadConfig("dispatcher", cfg); err != nil {
+		return nil, fmt.Errorf("failed to load dispatcher config: %w", err)
+	}
+
+	d := &Dispatcher{
+		msglayers:    make(map[MsgLayerType]MsgLayerReceiver),
+		transports:   trans,
+		recvLimiter:  NewTokenRecvLimiter(cfg.RecvRateLimit, cfg.TokenBurst),
+		msgFilterMap: make(map[string]struct{}),
+		msgMgr:       msgMgr,
+		config:       cfg,
+		lock:         sync.RWMutex{},
+	}
+
+	d.reloadMsgFilterCfg(&cfg.MsgFilter)
+
+	d.filters = append(d.filters, d.msgFilter)
+	d.filters = append(d.filters, d.recvLimiter.recvLimiterFilter)
+
+	// Register as configuration change listener
+	configManager.AddChangeListener(d)
+
+	return d, nil
+}
+
+// OnConfigChanged implements the ConfigChangeListener interface for Dispatcher.
+// This method is called when the dispatcher configuration is updated in the config manager.
+// It handles dynamic updates to dispatcher settings without requiring service restart.
+func (d *Dispatcher) OnConfigChanged(configName string, newConfig, oldConfig config.Config) error {
+	if configName != "dispatcher" {
+		return nil
+	}
+
+	newCfg, ok := newConfig.(*DispatcherConfig)
+	if !ok {
+		return fmt.Errorf("invalid configuration type for Dispatcher")
+	}
+
+	// Validate the new configuration
+	if err := newCfg.Validate(); err != nil {
+		return fmt.Errorf("invalid dispatcher configuration: %w", err)
+	}
+
+	// Update configuration atomically
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	// Update rate limiter with new configuration
+	d.recvLimiter.Reload(newCfg.RecvRateLimit, newCfg.TokenBurst)
+
+	// Update message filter configuration
+	d.reloadMsgFilterCfg(&newCfg.MsgFilter)
+
+	// Update configuration reference
+	d.config = newCfg
+
+	log.Info().Str("configName", configName).Msg("Dispatcher configuration updated successfully")
+	return nil
+}
+
+// GetConfigName implements the ConfigChangeListener interface for Dispatcher.
+// Returns the configuration name that this listener is interested in.
+func (d *Dispatcher) GetConfigName() string {
+	return "dispatcher"
 }
 
 // RegisterMsglayer registers a message layer receiver with the dispatcher
@@ -392,23 +515,6 @@ func (d *Dispatcher) chooseMsgLayerReceiver(dd *DispatcherDelivery) MsgLayerRece
 		return m
 	}
 	return nil
-}
-
-// getDefaultConfig returns a default dispatcher configuration
-// Returns: Pointer to a DispatcherConfig with default values
-//
-// Provides default configuration values for the dispatcher when none are specified.
-// Sets reasonable defaults for rate limiting and token bucket size suitable for
-// typical game server scenarios.
-//
-// Internal helper function used by NewDispatcher when no configuration is provided.
-//
-// Reference: <mcfile name="dispatcher.go" path="/root/asura/net/dispatcher.go"></mcfile>
-func getDefaultConfig() *DispatcherConfig {
-	return &DispatcherConfig{
-		RecvRateLimit: 20000, // Default of 20,000 messages per second
-		TokenBurst:    1000,  // Default token bucket size of 1,000
-	}
 }
 
 // checkParamValid validates dispatcher configuration parameters

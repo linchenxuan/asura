@@ -63,16 +63,6 @@ func (fc DispatcherFilterChain) Handle(dd *DispatcherDelivery, f DispatcherFilte
 	})
 }
 
-// msgFilterPluginCfg defines configuration for the message filter plugin.
-// It contains a list of message IDs that should be filtered by the dispatcher.
-//
-// This configuration structure is typically populated from application settings
-// and used to control which messages should be intercepted by the filtering mechanism.
-
-type msgFilterPluginCfg struct {
-	MsgFilter []string `mapstructure:"msgFilter"`
-}
-
 // reloadMsgFilterCfg reloads the message filter configuration when it changes.
 // It updates the dispatcher's message filter map with new message IDs to filter.
 //
@@ -82,7 +72,7 @@ type msgFilterPluginCfg struct {
 // This method is typically called during application initialization or when
 // configuration changes are detected at runtime.
 
-func (dp *Dispatcher) reloadMsgFilterCfg(cfg *msgFilterPluginCfg) {
+func (dp *Dispatcher) reloadMsgFilterCfg(cfg *MsgFilterPluginCfg) {
 	for _, msgName := range cfg.MsgFilter {
 		dp.msgFilterMap[msgName] = struct{}{}
 	}

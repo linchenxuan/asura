@@ -1,5 +1,7 @@
 package stateful
 
+import "fmt"
+
 // ActorSaveCategory defines configuration for actor data persistence strategies.
 // This struct controls how and when actor state data is saved to storage.
 type ActorSaveCategory struct {
@@ -26,16 +28,30 @@ type StatefulConfig struct {
 	GraceFulTimeoutSecond int               `mapstructure:"graceFulTimeoutSecond"`
 }
 
-// getDefaultConfig returns a new StatefulConfig instance with default values.
-// These defaults are chosen to provide reasonable performance characteristics
-// for typical game server scenarios.
-func getDefaultConfig() *StatefulConfig {
-	return &StatefulConfig{
-		TickPeriodMillSec:   20 * 1000, // 20 seconds
-		GrHBTimeoutSec:      10,        // 10 seconds
-		BroadcastQPS:        10000,     // 10,000 notifications per second
-		BroadcastMaxWaitNum: 10,        // Queue up to 10 pending messages
-		MaxActorCount:       5000,      // Allow up to 5000 concurrent actors
-		MigrateFeatSwitch:   false,     // Migration feature disabled by default
+// GetName returns the configuration name for StatefulConfig
+func (c *StatefulConfig) GetName() string {
+	return "stateful"
+}
+
+// Validate validates the StatefulConfig parameters
+func (c *StatefulConfig) Validate() error {
+	if c.TickPeriodMillSec <= 0 {
+		return fmt.Errorf("TickPeriodMillSec must be positive")
 	}
+	if c.GrHBTimeoutSec <= 0 {
+		return fmt.Errorf("GrHBTimeoutSec must be positive")
+	}
+	if c.BroadcastQPS <= 0 {
+		return fmt.Errorf("BroadcastQPS must be positive")
+	}
+	if c.MaxActorCount <= 0 {
+		return fmt.Errorf("MaxActorCount must be positive")
+	}
+	if c.TaskChanSize <= 0 {
+		return fmt.Errorf("TaskChanSize must be positive")
+	}
+	if c.GraceFulTimeoutSecond <= 0 {
+		return fmt.Errorf("GraceFulTimeoutSecond must be positive")
+	}
+	return nil
 }

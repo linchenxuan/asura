@@ -111,7 +111,7 @@ func TestDispatcherFilterChain(t *testing.T) {
 
 // TestMsgFilterPluginCfg tests message filter configuration
 func TestMsgFilterPluginCfg(t *testing.T) {
-	cfg := &msgFilterPluginCfg{
+	cfg := &MsgFilterPluginCfg{
 		MsgFilter: []string{"test.msg1", "test.msg2", "test.msg3"},
 	}
 
@@ -145,7 +145,7 @@ func TestReloadMsgFilterCfg(t *testing.T) {
 	}
 
 	// Test reloading with configuration
-	cfg := &msgFilterPluginCfg{
+	cfg := &MsgFilterPluginCfg{
 		MsgFilter: []string{"msg1", "msg2", "msg3"},
 	}
 	dispatcher.reloadMsgFilterCfg(cfg)
@@ -162,7 +162,7 @@ func TestReloadMsgFilterCfg(t *testing.T) {
 	}
 
 	// Test reloading with additional messages
-	cfg2 := &msgFilterPluginCfg{
+	cfg2 := &MsgFilterPluginCfg{
 		MsgFilter: []string{"msg4", "msg5"},
 	}
 	dispatcher.reloadMsgFilterCfg(cfg2)
@@ -200,7 +200,7 @@ func TestMsgFilter(t *testing.T) {
 	}
 
 	// Add message to filter
-	dispatcher.reloadMsgFilterCfg(&msgFilterPluginCfg{
+	dispatcher.reloadMsgFilterCfg(&MsgFilterPluginCfg{
 		MsgFilter: []string{"test.req", "unknown.msg"},
 	})
 
@@ -347,7 +347,7 @@ func TestMsgFilterWithSendBack(t *testing.T) {
 	}
 
 	// Add message to filter
-	dispatcher.reloadMsgFilterCfg(&msgFilterPluginCfg{
+	dispatcher.reloadMsgFilterCfg(&MsgFilterPluginCfg{
 		MsgFilter: []string{"game.join"},
 	})
 
@@ -427,7 +427,7 @@ func TestMsgFilterWithoutSendBack(t *testing.T) {
 	}
 
 	// Add message to filter
-	dispatcher.reloadMsgFilterCfg(&msgFilterPluginCfg{
+	dispatcher.reloadMsgFilterCfg(&MsgFilterPluginCfg{
 		MsgFilter: []string{"test.req"},
 	})
 
@@ -571,7 +571,7 @@ func BenchmarkMsgFilter(b *testing.B) {
 	for i := 0; i < 50; i++ {
 		filterMsgs = append(filterMsgs, fmt.Sprintf("msg.%d", i))
 	}
-	dispatcher.reloadMsgFilterCfg(&msgFilterPluginCfg{MsgFilter: filterMsgs})
+	dispatcher.reloadMsgFilterCfg(&MsgFilterPluginCfg{MsgFilter: filterMsgs})
 
 	delivery := &DispatcherDelivery{
 		TransportDelivery: &TransportDelivery{
