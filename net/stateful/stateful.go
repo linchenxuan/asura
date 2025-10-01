@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
+	"github.com/lcx/asura/metrics"
 	"github.com/lcx/asura/net"
 	"google.golang.org/protobuf/proto"
 )
@@ -194,17 +196,25 @@ func (layer *StatefulMsgLayer) handleDispacherPkg(delivery *net.DispatcherDelive
 // It retrieves or creates the actor runtime, creates a handle context,
 // and posts the message for processing.
 func (layer *StatefulMsgLayer) handleActorPkg(aid uint64, delivery *net.DispatcherDelivery) (err error) {
+	startTime := time.Now()
+	metrics.IncrCounterWithGroup("net.stateful", "actor_message_total", 1)
+	defer metrics.RecordStopwatchWithGroup("net.stateful", "actor_message_process_time", startTime)
+
 	ar, ok := layer.actorMgr.getActorRuntime(aid)
 	hCtx := &HandleContext{}
 	if !ok {
 		hCtx = newHandleContext(aid, delivery, ar.actor)
 		ar, err = layer.tryGetActorRuntime(hCtx)
 		if err != nil {
+			metrics.IncrCounterWithDimGroup("net.stateful", "actor_error_total", 1, map[string]string{"error_type": "create_actor"})
 			return err
 		}
 	}
 	hCtx = newHandleContext(aid, delivery, ar.actor)
-	err = ar.postPkg(hCtx)
+	if err = ar.postPkg(hCtx); err != nil {
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_error_total", 1, map[string]string{"error_type": "post_message"})
+	}
+
 	return
 }
 

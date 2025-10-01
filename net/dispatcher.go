@@ -21,9 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
+	"github.com/lcx/asura/metrics"
 )
 
 // DispatcherDelivery extends TransportDelivery to include protocol information and response options
@@ -467,6 +469,9 @@ func (d *Dispatcher) RegDispatcherFilter(f DispatcherFilter) {
 //
 // Reference: <mcfile name="dispatcher.go" path="/root/asura/net/dispatcher.go"></mcfile>
 func (d *Dispatcher) OnRecvTransportPkg(td *TransportDelivery) error {
+	// 记录消息接收量
+	metrics.IncrCounterWithGroup("net_message_received", "network", 1)
+
 	info, _ := d.msgMgr.GetProtoInfo(td.Pkg.PkgHdr.GetMsgID())
 
 	dd := &DispatcherDelivery{
@@ -474,7 +479,30 @@ func (d *Dispatcher) OnRecvTransportPkg(td *TransportDelivery) error {
 		ProtoInfo:         info,
 	}
 
-	return d.filters.Handle(dd, d.handleTransportMsgImpl)
+	// 记录消息类型分布
+	if info != nil {
+		dimensions := metrics.Dimension{
+			"msg_id":    td.Pkg.PkgHdr.GetMsgID(),
+			"msg_layer": string(info.MsgLayerType),
+			"msg_type":  string(info.MsgReqType),
+		}
+		metrics.IncrCounterWithDimGroup("net_message_type_distribution", "network", 1, dimensions)
+	}
+
+	// 记录处理时间
+	startTime := time.Now()
+	err := d.filters.Handle(dd, d.handleTransportMsgImpl)
+	duration := time.Since(startTime).Milliseconds()
+
+	// 记录处理时间
+	metrics.UpdateGaugeWithGroup("net_message_processing_time", "network", metrics.Value(duration))
+
+	// 记录错误情况
+	if err != nil {
+		metrics.IncrCounterWithGroup("net_message_error", "network", 1)
+	}
+
+	return err
 }
 
 // handleTransportMsgImpl is the internal method for message handling after filtering

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lcx/asura/log"
+	"github.com/lcx/asura/metrics"
 	"github.com/lcx/asura/net"
 	"google.golang.org/protobuf/proto"
 )
@@ -136,15 +137,26 @@ func (a *actorRuntime) postPkg(hCtx *HandleContext) error {
 		// For request messages, we need to send a response
 		if !hCtx.ProtoInfo.IsReq() {
 			hCtx.Info().Msg("actor is closed, ignore ntf msg")
+			metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_dropped_total", 1, map[string]string{"reason": "actor_closed", "message_type": "notification"})
 			return nil
 		}
 		hCtx.Error().Msg("actor is closed, sendback req msg")
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_dropped_total", 1, map[string]string{"reason": "actor_closed", "message_type": "request"})
 		return nil
 	}
 	select {
 	case a.pkgCtxChan <- hCtx:
+		// 记录消息队列长度
+		metrics.UpdateGaugeWithGroup("net.stateful", "actor_queue_length", metrics.Value(len(a.pkgCtxChan)))
 		return nil
 	default:
+		msgType := "notification"
+		if hCtx.ProtoInfo.IsReq() {
+			msgType = "request"
+		}
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_dropped_total", 1, map[string]string{"reason": "queue_full",
+			"message_type": msgType})
+
 		return fmt.Errorf("actorID:%d pkgctx chan is full", a.actorID)
 	}
 }
@@ -219,21 +231,31 @@ func (a *actorRuntime) runLoop() {
 // tick executes the actor's OnTick method and handles periodic operations.
 // It triggers frequent saves based on configuration and handles actor timeout if configured.
 func (a *actorRuntime) tick() {
+	startTime := time.Now()
+	metrics.IncrCounterWithGroup("net.stateful", "actor_tick_total", 1)
+
 	if err := a.actor.OnTick(); err != nil {
 		a.actor.Error().Err(err).Msg("secureTask OnTick")
+		metrics.IncrCounterWithGroup("net.stateful", "actor_tick_error_total", 1)
 	}
+
+	metrics.RecordStopwatchWithGroup("net.stateful", "actor_tick_process_time", startTime)
+
 	now := time.Now().Unix()
 	cfg := a.msgLayer.StatefulConfig
 	if cfg.SaveCategory.FreqSaveSecond > 0 {
 		if now >= a.lastFreqSaveSec+int64(cfg.SaveCategory.FreqSaveSecond) {
+			saveStartTime := time.Now()
 			a.actor.Save()
+			metrics.RecordStopwatchWithGroup("net.stateful", "actor_save_time", saveStartTime)
 			a.lastFreqSaveSec = now
 		}
 	}
 
 	if cfg.ActorLifeSecond > 0 {
 		if now >= a.lastActive+int64(cfg.ActorLifeSecond) {
-			a.actor.Info().Int64("sec", now-a.lastActive).Msg("donot active for diff")
+			a.actor.Info().Int64("sec", now-a.lastActive).Msg("actor inactive for too long")
+			metrics.IncrCounterWithGroup("net.stateful", "actor_timeout_total", 1)
 			a.exitActor()
 		}
 	}
@@ -244,12 +266,34 @@ func (a *actorRuntime) tick() {
 // and executes it. For request messages, it sends back the response.
 // It returns any error encountered during processing.
 func (a *actorRuntime) handlePkg(hCtx *HandleContext) (err error) {
+	startTime := time.Now()
+	msgID := hCtx.ProtoInfo.MsgID
+	isReq := hCtx.ProtoInfo.IsReq()
+
+	// 记录处理消息的总数和类型分布
+	dimensions := map[string]string{
+		"msg_id":       msgID,
+		"message_type": "notification",
+	}
+	if isReq {
+		dimensions["message_type"] = "request"
+	}
+	metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_process_total", 1, dimensions)
+
+	// 使用defer确保无论函数从哪个路径返回，都会记录处理时间
+	defer metrics.RecordStopwatchWithDimGroup("net.stateful", "actor_message_process_time", startTime, dimensions)
+
 	body, err := hCtx.Pkg.DecodeBody()
 	if err != nil {
+		dimensions["error_type"] = "decode"
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_error_total", 1, dimensions)
 		return err
 	}
+
 	handle, ok := hCtx.ProtoInfo.GetMsgHandle().(MsgHandle)
 	if !ok || handle == nil {
+		dimensions["error_type"] = "no_handler"
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_error_total", 1, dimensions)
 		return errors.New("no handler")
 	}
 
@@ -259,11 +303,22 @@ func (a *actorRuntime) handlePkg(hCtx *HandleContext) (err error) {
 
 	if hCtx.ProtoInfo.IsReq() {
 		err = hCtx.sendBack(code, res)
-		return
+		if err != nil {
+			dimensions["error_type"] = "send_back"
+			metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_error_total", 1, dimensions)
+		}
 	}
+
 	if code != int32(net.EAsuraRetCode_AsuraRetCodeOK) {
+		dimensions["error_type"] = "business"
+		dimensions["ret_code"] = fmt.Sprintf("%d", code)
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_error_total", 1, dimensions)
 		hCtx.Info().Str("MsgID", hCtx.ProtoInfo.MsgID).Int32("Retcode", code).End()
+	} else {
+		// 记录成功处理的消息
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_message_success_total", 1, dimensions)
 	}
+
 	return
 }
 

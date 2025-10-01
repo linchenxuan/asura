@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lcx/asura/log"
+	"github.com/lcx/asura/metrics"
 )
 
 // actorMgr manages all actor instances in the system
@@ -58,24 +59,30 @@ func (mgr *actorMgr) createActor(aid uint64) (*actorRuntime, error) {
 	mgr.lock.Lock()
 	defer mgr.lock.Unlock()
 
+	metrics.IncrCounterWithGroup("net.stateful", "actor_create_attempt_total", 1)
+
 	// Check if actor already exists
 	if a, ok := mgr.actorMap[aid]; ok {
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_create_attempt_total", 1, map[string]string{"result": "already_exists"})
 		return a, nil
 	}
 
 	// Check if manager is closed
 	if atomic.LoadInt32(&mgr.closed) != 0 {
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_create_failed_total", 1, map[string]string{"reason": "manager_closed"})
 		return nil, fmt.Errorf("actor:%d is closed", aid)
 	}
 
 	// Enforce actor count limit
 	if len(mgr.actorMap) >= mgr.msgLayer.MaxActorCount {
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_create_failed_total", 1, map[string]string{"reason": "actor_limit_exceeded"})
 		return nil, fmt.Errorf("actor:%d size:%d too much actor", aid, len(mgr.actorMap))
 	}
 
 	// Create new actor instance using the provided creator function
 	actor, err := mgr.creator(aid)
 	if err != nil {
+		metrics.IncrCounterWithDimGroup("net.stateful", "actor_create_failed_total", 1, map[string]string{"reason": "creator_error"})
 		return nil, fmt.Errorf("actor:%d error:%v", aid, err)
 	}
 
@@ -86,9 +93,19 @@ func (mgr *actorMgr) createActor(aid uint64) (*actorRuntime, error) {
 	// Register the actor in the map
 	mgr.actorMap[aid] = ar
 
+	// 更新当前活跃actor数量指标
+	metrics.UpdateGaugeWithGroup("net.stateful", "active_actors_count", metrics.Value(len(mgr.actorMap)))
+
+	// 记录成功创建的actor
+	metrics.IncrCounterWithGroup("net.stateful", "actor_created_total", 1)
+
 	// Start the actor's main loop in a new goroutine
 	go func() {
-		defer delete(mgr.actorMap, aid) // Ensure actor is removed from map when done
+		defer func() {
+			delete(mgr.actorMap, aid) // Ensure actor is removed from map when done
+			metrics.UpdateGaugeWithGroup("net.stateful", "active_actors_count", metrics.Value(len(mgr.actorMap)))
+			metrics.IncrCounterWithGroup("net.stateful", "actor_destroyed_total", 1)
+		}()
 
 		ar.runLoop()
 	}()

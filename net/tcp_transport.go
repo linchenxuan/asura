@@ -13,6 +13,7 @@ import (
 
 	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
+	"github.com/lcx/asura/metrics"
 )
 
 // 修改后
@@ -135,23 +136,37 @@ func NewTCPTransportWithConfig(cfg *TCPTransportCfg) *TCPTransport {
 }
 
 // Start CSTransport interface.
-func (t *TCPTransport) Start() error {
+func (t *TCPTransport) Start(opt TransportOption) error {
+	// 记录Start方法调用的指标
+	metrics.IncrCounterWithGroup("net", "transport_start_total", 1)
+
+	// 从TransportOption中获取receiver和creator
+	t.receiver = opt.Handler
+	t.creator = opt.Creator
+
 	if t.TCPTransportCfg == nil {
+		metrics.IncrCounterWithDimGroup("net", "transport_start_error_total", 1, map[string]string{"error_type": "nil_config"})
 		return errors.New("TCPTransportCfg is nil")
 	}
 	if t.Addr == "" {
+		metrics.IncrCounterWithDimGroup("net", "transport_start_error_total", 1, map[string]string{"error_type": "empty_addr"})
 		return errors.New("Addr is empty")
 	}
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", t.Addr)
 	if err != nil {
+		metrics.IncrCounterWithDimGroup("net", "transport_start_error_total", 1, map[string]string{"error_type": "resolve"})
 		return errors.New("resolve: " + err.Error())
 	}
 
 	listener, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
+		metrics.IncrCounterWithDimGroup("net", "transport_start_error_total", 1, map[string]string{"error_type": "listen"})
 		return errors.New("listen fail: " + err.Error())
 	}
+
+	// 记录成功启动的指标
+	metrics.IncrCounterWithDimGroup("net", "transport_start_success_total", 1, map[string]string{"transport_type": "tcp"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.cancel = cancel
@@ -275,6 +290,13 @@ func (t *TCPTransport) addConn(uid uint64, tcx *tcpctx) {
 	t.uidToConn[uid] = tcx
 }
 
+// getCurrentConnCount returns the current number of connections
+func (t *TCPTransport) getCurrentConnCount() int {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	return len(t.uidToConn)
+}
+
 type tcpctx struct {
 	uid           uint64
 	actorMetaKey  uint64
@@ -297,6 +319,11 @@ func (t *tcpctx) close() {
 	t.closeOnce.Do(func() {
 
 		t.transport.removeConn(t.uid)
+		// 记录连接关闭的指标
+		metrics.IncrCounterWithGroup("net", "connection_close_total", 1)
+		// 更新当前连接数的指标
+		currentConnCount := t.transport.getCurrentConnCount()
+		metrics.UpdateGaugeWithGroup("net", "current_connections", metrics.Value(currentConnCount))
 
 		// notify recv goroutine to exit
 
@@ -368,8 +395,14 @@ func (t *tcpctx) beginServeRecv() error {
 	t.setReadDeadline()
 	ok := t.readUID()
 	if !ok {
+		metrics.IncrCounterWithGroup("net", "connection_auth_failure_total", 1)
 		return errors.New("readUID fail")
 	}
+
+	// 记录连接成功的指标
+	metrics.IncrCounterWithGroup("net", "connection_success_total", 1)
+	// 更新当前连接数的指标
+	metrics.UpdateGaugeWithGroup("net", "current_connections", metrics.Value(t.transport.getCurrentConnCount()))
 
 	return nil
 }

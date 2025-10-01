@@ -143,7 +143,7 @@ func RecordStopwatchWithGroup(key string, group string, startTime time.Time) tim
 
 // RecordStopwatchWithDimGroup records a stopwatch duration with specified group and dimensions.
 // Stopwatches measure the time taken for operations in milliseconds.
-func RecordStopwatchWithDimGroup(key string, group string, dimensions Dimension, startTime time.Time) time.Duration {
+func RecordStopwatchWithDimGroup(key string, group string, startTime time.Time, dimensions Dimension) time.Duration {
 	if s := getStopWatch(key, group); s != nil {
 		return s.RecordWithDim(dimensions, startTime)
 	}
