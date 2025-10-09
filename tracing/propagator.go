@@ -52,10 +52,11 @@ func (p *TextMapPropagator) Extract(carrier Carrier) (SpanContext, error) {
 		return EmptySpanContext(), nil
 	}
 
-	// 创建span上下文
+	// 创建span上下文，初始化baggage映射
 	ctx := &spanContext{
 		traceID: traceID,
 		spanID:  spanID,
+		baggage: make(map[string]string), // 显式初始化baggage映射
 	}
 
 	// 提取baggage项
@@ -138,10 +139,11 @@ func (p *HTTPHeadersPropagator) Extract(carrier Carrier) (SpanContext, error) {
 		return EmptySpanContext(), nil
 	}
 
-	// 创建span上下文
+	// 创建span上下文并初始化baggage映射
 	ctx := &spanContext{
 		traceID: traceID,
 		spanID:  spanID,
+		baggage: make(map[string]string),
 	}
 
 	// 提取baggage项

@@ -9,7 +9,6 @@ import (
 // span is the default implementation of the Span interface
 // It provides thread-safe operations for capturing timing information,
 // metadata (tags), structured logs, and baggage items for a unit of work
-
 type span struct {
 	mu         sync.RWMutex           // Mutex for thread-safe access to span fields
 	tracer     *tracer                // Tracer that created this span
@@ -25,7 +24,6 @@ type span struct {
 
 // LogData represents a structured log entry recorded in a span
 // Contains a timestamp and a collection of typed fields
-
 type LogData struct {
 	Timestamp time.Time  // When the log entry was recorded
 	Fields    []LogField // Collection of key-value pairs with type information
@@ -176,10 +174,14 @@ func (s *span) SetBaggageItem(key, value string) Span {
 		return s
 	}
 
+	// 设置span自己的baggage
 	if s.baggage == nil {
 		s.baggage = make(map[string]string)
 	}
 	s.baggage[key] = value
+
+	// 同时设置span.context的baggage，确保baggage项能被正确传播
+	s.context.SetBaggageItem(key, value)
 	return s
 }
 
@@ -241,9 +243,7 @@ func (s *span) GetLogs() []LogData {
 			Fields:    make([]LogField, len(log.Fields)),
 		}
 		// Copy Fields
-		for j, field := range log.Fields {
-			logData.Fields[j] = field
-		}
+		copy(logData.Fields, log.Fields)
 		logs[i] = logData
 	}
 	return logs

@@ -218,22 +218,3 @@ func (t *noopTracer) Close() error {
 // 上下文键类型
 
 type spanContextKey struct{}
-
-// ContextWithSpan 将span添加到context.Context中
-func ContextWithSpan(ctx context.Context, span Span) context.Context {
-	return context.WithValue(ctx, spanContextKey{}, span.Context())
-}
-
-// SpanFromContext 从context.Context中提取span
-func SpanFromContext(ctx context.Context) SpanContext {
-	if ctx == nil {
-		return EmptySpanContext()
-	}
-
-	spanCtx, ok := ctx.Value(spanContextKey{}).(SpanContext)
-	if !ok || spanCtx == nil || !spanCtx.IsValid() {
-		return EmptySpanContext()
-	}
-
-	return spanCtx
-}

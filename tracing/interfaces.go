@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -241,12 +242,14 @@ type noopReporter struct{}
 // It manages the lifecycle of spans and handles span reporting
 
 type tracer struct {
-	reporter       Reporter      // Reporter for sending completed spans
-	sampler        Sampler       // Sampler for determining which spans to sample
-	maxSpans       int           // Maximum number of spans to keep in memory
-	spanTimeout    time.Duration // Maximum time a span can remain active
-	reportInterval time.Duration // How often to report batches of spans
-	spanPool       *SpanPool     // Pool for reusing span objects
+	reporter       Reporter                   // Reporter for sending completed spans
+	sampler        Sampler                    // Sampler for determining which spans to sample
+	maxSpans       int                        // Maximum number of spans to keep in memory
+	spanTimeout    time.Duration              // Maximum time a span can remain active
+	reportInterval time.Duration              // How often to report batches of spans
+	spanPool       *SpanPool                  // Pool for reusing span objects
+	propagators    map[interface{}]Propagator // Map of format to propagator
+	mu             sync.RWMutex               // Mutex for thread-safe access to propagators
 }
 
 // Report implements the Reporter interface for noopReporter
@@ -267,20 +270,53 @@ func (t *tracer) Close() error {
 }
 
 // Extract implements the Tracer interface
-// This is a placeholder implementation that returns an empty span context
+// Extracts a SpanContext from the provided carrier using the registered propagator for the format
 func (t *tracer) Extract(format interface{}, carrier interface{}) (SpanContext, error) {
-	return EmptySpanContext(), nil
+	t.mu.RLock()
+	propagator, ok := t.propagators[format]
+	t.mu.RUnlock()
+
+	if !ok {
+		// If no propagator is registered for the format, return an empty span context
+		return EmptySpanContext(), nil
+	}
+
+	// Ensure carrier implements the Carrier interface
+	carrierImpl, ok := carrier.(Carrier)
+	if !ok {
+		return EmptySpanContext(), nil
+	}
+
+	return propagator.Extract(carrierImpl)
 }
 
 // Inject implements the Tracer interface
-// This is a placeholder implementation that does nothing
+// Injects a SpanContext into the provided carrier using the registered propagator for the format
 func (t *tracer) Inject(ctx SpanContext, format interface{}, carrier interface{}) error {
-	return nil
+	t.mu.RLock()
+	propagator, ok := t.propagators[format]
+	t.mu.RUnlock()
+
+	if !ok {
+		// If no propagator is registered for the format, return no error
+		return nil
+	}
+
+	// Ensure carrier implements the Carrier interface
+	carrierImpl, ok := carrier.(Carrier)
+	if !ok {
+		return nil
+	}
+
+	return propagator.Inject(ctx, carrierImpl)
 }
 
 // RegisterPropagator implements the Tracer interface
-// This is a placeholder implementation that does nothing
+// Registers a propagator for a specific format
 func (t *tracer) RegisterPropagator(format interface{}, propagator Propagator) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.propagators[format] = propagator
 }
 
 // StartSpan implements the Tracer interface
@@ -315,10 +351,22 @@ func (t *tracer) StartSpan(operationName string, options ...SpanOption) Span {
 }
 
 // StartSpanFromContext implements the Tracer interface
-// This is a placeholder implementation that returns a no-op span
+// Creates a new span from a context.Context
+// If the context contains a span, it will be used as the parent
+// Returns both the new span and an updated context containing it
 func (t *tracer) StartSpanFromContext(ctx context.Context, operationName string, options ...SpanOption) (Span, context.Context) {
-	span := NewNoopSpan()
-	return span, ctx
+	// Extract parent span from context
+	parentSpan := SpanFromContext(ctx)
+	if parentSpan != nil {
+		// Add parent span option
+		options = append(options, WithParent(parentSpan.Context()))
+	}
+
+	// Create new span
+	span := t.StartSpan(operationName, options...)
+
+	// Create new context with the span
+	return span, ContextWithSpan(ctx, span)
 }
 
 // NewProbabilitySampler creates a sampler that samples spans based on a probability
@@ -435,6 +483,7 @@ func NewTracer(opts ...TracerOption) Tracer {
 		spanTimeout:    5 * time.Minute,
 		reportInterval: 5 * time.Second,
 		spanPool:       NewSpanPool(),
+		propagators:    make(map[interface{}]Propagator),
 	}
 
 	// Apply all provided options
