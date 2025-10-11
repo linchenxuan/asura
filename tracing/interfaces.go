@@ -9,7 +9,6 @@ import (
 // Span represents a unit of work or operation in the tracing system
 // It captures timing information, metadata (tags), structured logs, and relationships between operations
 // Spans form the building blocks of traces, which are causal graphs of spans
-
 type Span interface {
 	// Context returns the span's context, which contains trace identifiers and baggage
 	Context() SpanContext
@@ -52,7 +51,6 @@ type Span interface {
 // Tracer is the central interface for creating and managing spans
 // It also handles context propagation across process boundaries
 // Tracers are typically created once per application and reused
-
 type Tracer interface {
 	// StartSpan creates a new span with the specified operation name and options
 	// Use SpanOptions to configure parent relationships, tags, and other properties
@@ -83,7 +81,6 @@ type Tracer interface {
 // SpanContext contains the identifying information for a span within a trace
 // It carries trace IDs, span IDs, and baggage items across process boundaries
 // Unlike Span, SpanContext is immutable and safe to pass between processes
-
 type SpanContext interface {
 	// TraceID returns the unique identifier for the entire trace
 	TraceID() string
@@ -113,7 +110,6 @@ type SpanContext interface {
 // Reporter is responsible for processing and sending completed spans to the backend
 // Different implementations support various backends like console, file, or remote services
 // Reporters are typically used by tracers to offload span processing
-
 type Reporter interface {
 	// Report processes a completed span's data
 	// This method is called by the tracer when a span is finished
@@ -126,7 +122,6 @@ type Reporter interface {
 // Sampler decides whether a particular trace should be sampled
 // Used to control the volume of traces collected and reduce overhead
 // Different sampling strategies balance observability and performance
-
 type Sampler interface {
 	// ShouldSample determines if a span should be sampled based on its context
 	// Returns true if the span should be sampled
@@ -136,7 +131,6 @@ type Sampler interface {
 // Propagator handles the encoding and decoding of SpanContext to/from carriers
 // Different propagators support different formats like HTTP headers or binary
 // Used for cross-process context propagation
-
 type Propagator interface {
 	// Inject encodes a SpanContext into a carrier for propagation
 	Inject(ctx SpanContext, carrier Carrier) error
@@ -147,24 +141,16 @@ type Propagator interface {
 
 // Carrier is used to transport span context data across process boundaries
 // Common implementations include HTTP headers, message headers, or custom protocols
-
 type Carrier interface {
 	// Get retrieves a value by key
 	Get(key string) string
 
 	// Set stores a key-value pair
-	Set(key string, value string)
-
-	// Keys returns all keys present in the carrier
-	Keys() []string
-
-	// Format returns a string identifying the carrier format
-	Format() string
+	Set(key, value string)
 }
 
 // LogField represents a single field in a structured log entry
 // Used to add typed metadata to span logs
-
 type LogField struct {
 	Key   string      // Name of the field
 	Value interface{} // Value of the field
@@ -172,21 +158,18 @@ type LogField struct {
 
 // FinishOption is an interface for configuring how a span is finished
 // Implemented using the functional options pattern
-
 type FinishOption interface {
 	apply(*finishOptions)
 }
 
 // finishOptions contains internal options for finishing a span
 // Not intended for direct use by users
-
 type finishOptions struct {
 	finishTime time.Time // Custom finish time for the span
 }
 
 // finishOptionFunc is a function that configures finishOptions
 // Implements the FinishOption interface
-
 type finishOptionFunc func(*finishOptions)
 
 // apply implements the FinishOption interface for finishOptionFunc
@@ -196,14 +179,12 @@ func (f finishOptionFunc) apply(opts *finishOptions) {
 
 // TracerOption is an interface for configuring a tracer
 // Implemented using the functional options pattern
-
 type TracerOption interface {
 	apply(*tracer)
 }
 
 // tracerOptionFunc is a function that configures a tracer
 // Implements the TracerOption interface
-
 type tracerOptionFunc func(*tracer)
 
 // apply implements the TracerOption interface for tracerOptionFunc
@@ -235,12 +216,10 @@ func NewNoopReporter() Reporter {
 
 // noopReporter is a no-op implementation of the Reporter interface
 // All methods return immediately without doing anything
-
 type noopReporter struct{}
 
 // tracer is an internal implementation of the Tracer interface
 // It manages the lifecycle of spans and handles span reporting
-
 type tracer struct {
 	reporter       Reporter                   // Reporter for sending completed spans
 	sampler        Sampler                    // Sampler for determining which spans to sample
@@ -382,7 +361,6 @@ func NewProbabilitySampler(rate float64) Sampler {
 }
 
 // neverSampler is a sampler that never samples any spans
-
 type neverSampler struct{}
 
 // ShouldSample implements the Sampler interface for neverSampler
@@ -398,7 +376,6 @@ type alwaysSampler struct{}
 func (s *alwaysSampler) ShouldSample(ctx SpanContext) bool { return true }
 
 // probabilitySampler is a sampler that samples spans based on a probability rate
-
 type probabilitySampler struct {
 	rate float64 // Sampling probability between 0.0 and 1.0
 }
@@ -446,14 +423,12 @@ func WithFinishTime(finishTime time.Time) FinishOption {
 
 // SpanOption is an interface for configuring span creation
 // Implemented using the functional options pattern
-
 type SpanOption interface {
 	apply(*spanOptions)
 }
 
 // spanOptions contains internal options for creating a span
 // Not intended for direct use by users
-
 type spanOptions struct {
 	parent     SpanContext            // Parent span context
 	tags       map[string]interface{} // Initial tags for the span
@@ -463,7 +438,6 @@ type spanOptions struct {
 
 // spanOptionFunc is a function that configures spanOptions
 // Implements the SpanOption interface
-
 type spanOptionFunc func(*spanOptions)
 
 // apply implements the SpanOption interface for spanOptionFunc
@@ -529,7 +503,6 @@ func WithSpanReference(ref SpanReference) SpanOption {
 
 // SpanReference represents a reference from one span to another
 // Used to establish relationships between spans beyond direct parent-child
-
 type SpanReference struct {
 	Type              SpanReferenceType // Type of reference (child-of, follows-from)
 	ReferencedContext SpanContext       // Context of the referenced span
@@ -537,7 +510,6 @@ type SpanReference struct {
 
 // SpanReferenceType represents the type of relationship between spans
 // Different types indicate different causal relationships
-
 type SpanReferenceType int
 
 const (

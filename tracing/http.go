@@ -17,7 +17,6 @@ import (
 // HTTP endpoint. It supports batching of spans to minimize network overhead
 // and provides both batch size and time-based flushing strategies.
 // This reporter is thread-safe and can be used concurrently from multiple goroutines.
-
 type HTTPReporter struct {
 	endpoint  string            // The remote HTTP endpoint URL to receive span data
 	headers   map[string]string // Custom HTTP headers to include in all requests

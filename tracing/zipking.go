@@ -13,7 +13,6 @@ import (
 // ZipkinReporter reports spans to Zipkin distributed tracing system
 // It implements the Reporter interface and provides batch processing and async reporting capabilities
 // to minimize performance impact on the main application thread
-
 type ZipkinReporter struct {
 	endpoint    string         // Zipkin server endpoint URL
 	serviceName string         // Name of the service being traced

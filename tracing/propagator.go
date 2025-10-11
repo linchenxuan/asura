@@ -5,28 +5,28 @@ import (
 	"strings"
 )
 
-// TextMapPropagator 实现文本映射格式的上下文传播
-// 负责在不同进程间传递SpanContext信息
+// TextMapPropagator implements text map format context propagation
+// Responsible for passing SpanContext information between different processes
 type TextMapPropagator struct{}
 
-// NewTextMapPropagator 创建一个新的文本映射传播器
-// 用于在文本格式的载体中传播SpanContext
+// NewTextMapPropagator creates a new text map propagator
+// Used for propagating SpanContext in text format carriers
 func NewTextMapPropagator() Propagator {
 	return &TextMapPropagator{}
 }
 
-// Inject 将SpanContext注入到文本映射载体中
-// 按照OpenTracing标准格式设置key-value对
+// Inject injects SpanContext into text map carrier
+// Sets key-value pairs according to OpenTracing standard format
 func (p *TextMapPropagator) Inject(ctx SpanContext, carrier Carrier) error {
 	if !ctx.IsValid() || carrier == nil {
 		return nil
 	}
 
-	// 设置TraceID和SpanID
+	// Set TraceID and SpanID
 	carrier.Set("trace-id", ctx.TraceID())
 	carrier.Set("span-id", ctx.SpanID())
 
-	// 注入baggage项
+	// Inject baggage items
 	ctx.ForeachBaggageItem(func(k, v string) bool {
 		encodedKey := "baggage-" + k
 		carrier.Set(encodedKey, v)
@@ -36,34 +36,34 @@ func (p *TextMapPropagator) Inject(ctx SpanContext, carrier Carrier) error {
 	return nil
 }
 
-// Extract 从文本映射载体中提取SpanContext
-// 解析OpenTracing标准格式的key-value对
+// Extract extracts SpanContext from text map carrier
+// Parses key-value pairs in OpenTracing standard format
 func (p *TextMapPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	if carrier == nil {
 		return EmptySpanContext(), nil
 	}
 
-	// 提取TraceID和SpanID
+	// Extract TraceID and SpanID
 	traceID := carrier.Get("trace-id")
 	spanID := carrier.Get("span-id")
 
-	// 如果没有有效的TraceID和SpanID，返回空上下文
+	// Return empty context if no valid TraceID and SpanID found
 	if traceID == "" || spanID == "" {
 		return EmptySpanContext(), nil
 	}
 
-	// 创建span上下文，初始化baggage映射
+	// Create span context and initialize baggage map
 	ctx := &spanContext{
 		traceID: traceID,
 		spanID:  spanID,
-		baggage: make(map[string]string), // 显式初始化baggage映射
+		baggage: make(map[string]string), // Explicitly initialize baggage map
 	}
 
-	// 提取baggage项
+	// Extract baggage items
 	for _, key := range carrier.Keys() {
-		// 检查是否为baggage项
+		// Check if it's a baggage item
 		if strings.HasPrefix(key, "baggage-") {
-			// 移除前缀获取原始键名
+			// Remove prefix to get original key name
 			baggageKey := key[len("baggage-"):]
 			baggageValue := carrier.Get(key)
 			if baggageKey != "" && baggageValue != "" {
@@ -75,30 +75,30 @@ func (p *TextMapPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	return ctx, nil
 }
 
-// HTTPHeadersPropagator 实现HTTP头格式的上下文传播
-// 针对HTTP环境优化的传播器实现
+// HTTPHeadersPropagator implements HTTP header format context propagation
+// Optimized propagator implementation for HTTP environments
 type HTTPHeadersPropagator struct{}
 
-// NewHTTPHeadersPropagator 创建一个新的HTTP头传播器
-// 用于在HTTP请求头中传播SpanContext
+// NewHTTPHeadersPropagator creates a new HTTP header propagator
+// Used for propagating SpanContext in HTTP request headers
 func NewHTTPHeadersPropagator() Propagator {
 	return &HTTPHeadersPropagator{}
 }
 
-// Inject 将SpanContext注入到HTTP头载体中
-// 使用HTTP标准的大驼峰命名格式
+// Inject injects SpanContext into HTTP header carrier
+// Uses HTTP standard PascalCase naming format
 func (p *HTTPHeadersPropagator) Inject(ctx SpanContext, carrier Carrier) error {
 	if !ctx.IsValid() || carrier == nil {
 		return nil
 	}
 
-	// 设置标准的HTTP头格式
+	// Set standard HTTP header format
 	carrier.Set("Trace-Id", ctx.TraceID())
 	carrier.Set("Span-Id", ctx.SpanID())
 
-	// 注入baggage项，使用Baggage-前缀
+	// Inject baggage items using Baggage- prefix
 	ctx.ForeachBaggageItem(func(k, v string) bool {
-		// 对键名进行编码，确保符合HTTP头规范
+		// Encode key name to ensure compliance with HTTP header specifications
 		encodedKey := "Baggage-" + sanitizeHTTPHeaderKey(k)
 		carrier.Set(encodedKey, v)
 		return true
@@ -107,18 +107,18 @@ func (p *HTTPHeadersPropagator) Inject(ctx SpanContext, carrier Carrier) error {
 	return nil
 }
 
-// Extract 从HTTP头载体中提取SpanContext
-// 支持多种常见的Trace ID HTTP头格式
+// Extract extracts SpanContext from HTTP header carrier
+// Supports multiple common Trace ID HTTP header formats
 func (p *HTTPHeadersPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	if carrier == nil {
 		return EmptySpanContext(), nil
 	}
 
-	// 尝试从多种常见的HTTP头格式中提取TraceID和SpanID
+	// Try to extract TraceID and SpanID from multiple common HTTP header formats
 	traceID := ""
 	spanID := ""
 
-	// 检查标准头格式
+	// Check standard header format
 	if t := carrier.Get("Trace-Id"); t != "" {
 		traceID = t
 	}
@@ -126,7 +126,7 @@ func (p *HTTPHeadersPropagator) Extract(carrier Carrier) (SpanContext, error) {
 		spanID = s
 	}
 
-	// 检查替代格式
+	// Check alternative formats
 	if traceID == "" {
 		traceID = carrier.Get("trace-id")
 	}
@@ -134,23 +134,23 @@ func (p *HTTPHeadersPropagator) Extract(carrier Carrier) (SpanContext, error) {
 		spanID = carrier.Get("span-id")
 	}
 
-	// 如果没有有效的TraceID和SpanID，返回空上下文
+	// Return empty context if no valid TraceID and SpanID found
 	if traceID == "" || spanID == "" {
 		return EmptySpanContext(), nil
 	}
 
-	// 创建span上下文并初始化baggage映射
+	// Create span context and initialize baggage map
 	ctx := &spanContext{
 		traceID: traceID,
 		spanID:  spanID,
 		baggage: make(map[string]string),
 	}
 
-	// 提取baggage项
+	// Extract baggage items
 	for _, key := range carrier.Keys() {
-		// 检查是否为baggage项（忽略大小写）
+		// Check if it's a baggage item (case insensitive)
 		if strings.HasPrefix(strings.ToLower(key), "baggage-") {
-			// 移除前缀获取原始键名
+			// Remove prefix to get original key name
 			baggageKey := key[len("baggage-"):]
 			baggageValue := carrier.Get(key)
 			if baggageKey != "" && baggageValue != "" {
@@ -162,10 +162,10 @@ func (p *HTTPHeadersPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	return ctx, nil
 }
 
-// sanitizeHTTPHeaderKey 清理HTTP头键名，确保符合规范
-// 移除或替换不符合HTTP头规范的字符
+// sanitizeHTTPHeaderKey sanitizes HTTP header key names to ensure compliance with specifications
+// Removes or replaces characters that don't conform to HTTP header specifications
 func sanitizeHTTPHeaderKey(key string) string {
-	// 简单实现：将非字母数字和连字符的字符替换为连字符
+	// Simple implementation: replace non-alphanumeric and non-hyphen characters with hyphens
 	var result strings.Builder
 	for _, c := range key {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
@@ -177,32 +177,32 @@ func sanitizeHTTPHeaderKey(key string) string {
 	return result.String()
 }
 
-// BinaryPropagator 实现二进制格式的上下文传播
-// 适用于需要高效二进制传输的场景
+// BinaryPropagator implements binary format context propagation
+// Suitable for scenarios requiring efficient binary transmission
 type BinaryPropagator struct{}
 
-// NewBinaryPropagator 创建一个新的二进制传播器
-// 用于在二进制格式的载体中传播SpanContext
+// NewBinaryPropagator creates a new binary propagator
+// Used for propagating SpanContext in binary format carriers
 func NewBinaryPropagator() Propagator {
 	return &BinaryPropagator{}
 }
 
-// Inject 将SpanContext注入到二进制载体中
-// 使用base64编码实现二进制传输
+// Inject injects SpanContext into binary carrier
+// Uses base64 encoding for binary transmission
 func (p *BinaryPropagator) Inject(ctx SpanContext, carrier Carrier) error {
-	// 二进制传播器的实现示例
-	// 在实际应用中，应该使用更高效的二进制编码方案
+	// Binary propagator implementation example
+	// In practical applications, more efficient binary encoding schemes should be used
 
 	if !ctx.IsValid() || carrier == nil {
 		return nil
 	}
 
-	// 简单实现：使用base64编码文本格式
-	// 实际应用中应该使用更高效的二进制序列化
+	// Simple implementation: use base64 encoding for text format
+	// In practice, more efficient binary serialization should be used
 	traceID := ctx.TraceID()
 	spanID := ctx.SpanID()
 
-	// 创建一个简单的二进制表示
+	// Create a simple binary representation
 	binaryData := []byte(traceID + ":" + spanID)
 	encodedData := base64.StdEncoding.EncodeToString(binaryData)
 
@@ -211,32 +211,32 @@ func (p *BinaryPropagator) Inject(ctx SpanContext, carrier Carrier) error {
 	return nil
 }
 
-// Extract 从二进制载体中提取SpanContext
-// 解析base64编码的二进制数据
+// Extract extracts SpanContext from binary carrier
+// Parses base64 encoded binary data
 func (p *BinaryPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	if carrier == nil {
 		return EmptySpanContext(), nil
 	}
 
-	// 获取并解码二进制数据
+	// Get and decode binary data
 	encodedData := carrier.Get("binary-trace-context")
 	if encodedData == "" {
 		return EmptySpanContext(), nil
 	}
 
-	// 解码base64数据
+	// Decode base64 data
 	binaryData, err := base64.StdEncoding.DecodeString(encodedData)
 	if err != nil {
 		return EmptySpanContext(), err
 	}
 
-	// 解析格式：traceID:spanID
+	// Parse format: traceID:spanID
 	parts := strings.Split(string(binaryData), ":")
 	if len(parts) < 2 {
 		return EmptySpanContext(), nil
 	}
 
-	// 创建并返回SpanContext
+	// Create and return SpanContext
 	return &spanContext{
 		traceID: parts[0],
 		spanID:  parts[1],

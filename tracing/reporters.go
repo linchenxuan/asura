@@ -9,7 +9,6 @@ import (
 // ConsoleReporter implements the Reporter interface to output span data to the console
 // This reporter is primarily useful for development, debugging, and testing purposes
 // It provides human-readable formatting of span details including trace IDs, timestamps, tags, and logs
-
 type ConsoleReporter struct {
 	mu     sync.Mutex  // Mutex to ensure thread-safe logging
 	logger *log.Logger // Logger used for outputting span information
@@ -82,7 +81,6 @@ func (r *ConsoleReporter) Close() error {
 // InMemoryReporter implements the Reporter interface to store spans in memory
 // This reporter is primarily useful for testing and scenarios where spans need to be programmatically accessed
 // It provides methods to retrieve, count, and clear stored spans
-
 type InMemoryReporter struct {
 	mu    sync.RWMutex // Read-write mutex for thread-safe access
 	spans []SpanData   // Collection of stored spans
@@ -144,7 +142,6 @@ func (r *InMemoryReporter) GetSpanCount() int {
 // BatchReporter wraps another reporter to provide batching functionality
 // It accumulates spans and sends them in batches to improve performance
 // Features include configurable batch size and automatic flushing after a timeout
-
 type BatchReporter struct {
 	reporter      Reporter       // Underlying reporter that actually processes the spans
 	maxBatchSize  int            // Maximum number of spans per batch
@@ -273,14 +270,14 @@ type AsyncReporter struct {
 
 // NewAsyncReporter creates a new async reporter
 func NewAsyncReporter(reporter Reporter, queueSize int) *AsyncReporter {
-	// 忽略queueSize，因为我们现在直接调用reporter.Report
+	// Ignore queueSize since we now directly call reporter.Report
 	return &AsyncReporter{
 		reporter: reporter,
 	}
 }
 
 func (ar *AsyncReporter) Report(span SpanData) error {
-	// 异步reporter直接调用reporter.Report
+	// Async reporter directly calls reporter.Report
 	return ar.reporter.Report(span)
 }
 
@@ -288,5 +285,5 @@ func (ar *AsyncReporter) Close() error {
 	return ar.reporter.Close()
 }
 
-// 由于我们简化了AsyncReporter的实现，不再需要reportLoop方法
-// reportLoop方法已移除，因为AsyncReporter现在直接调用reporter.Report
+// Since we simplified the AsyncReporter implementation, the reportLoop method is no longer needed
+// The reportLoop method has been removed because AsyncReporter now directly calls reporter.Report

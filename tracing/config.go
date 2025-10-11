@@ -9,7 +9,6 @@ import (
 // SpanPool provides object pooling for span objects to minimize garbage collection overhead
 // It reuses span instances instead of creating new ones for each trace operation
 // This is especially important for high-performance applications with frequent tracing
-
 type SpanPool struct {
 	pool sync.Pool // Underlying sync.Pool for thread-safe object reuse
 }
@@ -67,7 +66,6 @@ func (p *SpanPool) Put(s *span) {
 
 // SpanContextPool provides object pooling for span context objects
 // Reuses span context instances to reduce memory allocation and garbage collection pressure
-
 type SpanContextPool struct {
 	pool sync.Pool // Underlying sync.Pool for thread-safe object reuse
 }
@@ -110,7 +108,6 @@ func (p *SpanContextPool) Put(c *spanContext) {
 
 // LogFieldPool provides object pooling for log field slices
 // Reuses slice instances to minimize memory allocation for log operations
-
 type LogFieldPool struct {
 	pool sync.Pool // Underlying sync.Pool for thread-safe object reuse
 }
@@ -143,7 +140,6 @@ func (p *LogFieldPool) Put(fields []LogField) {
 
 // TracerConfig holds configuration parameters for the tracing system
 // This struct supports JSON and YAML unmarshalling for easy configuration loading
-
 type TracerConfig struct {
 	// ServiceName uniquely identifies the service in the tracing system
 	ServiceName string `json:"service_name" yaml:"service_name"`

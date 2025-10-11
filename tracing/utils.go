@@ -10,7 +10,6 @@ import (
 // noopSpan is a no-op implementation of the Span interface
 // All methods do nothing and return immediately
 // Useful in testing or when tracing is disabled
-
 type noopSpan struct{}
 
 // NewNoopSpan creates a new span that doesn't perform any tracing operations
@@ -66,7 +65,6 @@ func (s *noopSpan) LogEvent(event string, payload ...interface{}) {}
 // textMapCarrier is a thread-safe implementation of the Carrier interface
 // Uses a simple map to store key-value pairs
 // Suitable for text-based context propagation
-
 type textMapCarrier struct {
 	data map[string]string // Underlying storage for key-value pairs
 	mu   sync.RWMutex      // Mutex for thread-safe access
@@ -117,7 +115,6 @@ func (c *textMapCarrier) Format() string {
 
 // httpHeadersCarrier is a thread-safe implementation of the Carrier interface
 // Designed specifically for HTTP headers context propagation
-
 type httpHeadersCarrier struct {
 	headers map[string]string // HTTP headers storage
 	mu      sync.RWMutex      // Mutex for thread-safe access
@@ -169,7 +166,6 @@ func (c *httpHeadersCarrier) Format() string {
 // SpanData represents the serialized form of a completed span for reporting purposes
 // It contains all essential information about a span in a format suitable for transmission
 // Used by reporters to send span data to external tracing systems
-
 type SpanData struct {
 	TraceID      string                 `json:"trace_id"`                 // Unique identifier for the trace
 	SpanID       string                 `json:"span_id"`                  // Unique identifier for this span

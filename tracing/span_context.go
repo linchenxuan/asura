@@ -11,7 +11,6 @@ import (
 
 // spanContext is the default implementation of the SpanContext interface
 // It contains trace identifiers and baggage items for propagating context across process boundaries
-
 type spanContext struct {
 	traceID      string            // Unique identifier for the entire trace
 	spanID       string            // Unique identifier for this specific span

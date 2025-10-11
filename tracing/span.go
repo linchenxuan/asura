@@ -174,13 +174,13 @@ func (s *span) SetBaggageItem(key, value string) Span {
 		return s
 	}
 
-	// 设置span自己的baggage
+	// Set baggage for the span itself
 	if s.baggage == nil {
 		s.baggage = make(map[string]string)
 	}
 	s.baggage[key] = value
 
-	// 同时设置span.context的baggage，确保baggage项能被正确传播
+	// Also set baggage in span.context to ensure baggage items are properly propagated
 	s.context.SetBaggageItem(key, value)
 	return s
 }
