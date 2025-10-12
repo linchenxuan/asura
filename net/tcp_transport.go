@@ -14,6 +14,7 @@ import (
 	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
 	"github.com/lcx/asura/metrics"
+	"github.com/lcx/asura/tracing"
 )
 
 // 修改后
@@ -409,12 +410,31 @@ func (t *tcpctx) beginServeRecv() error {
 
 // recvPkg decode fail not quit, other err need quit loop.
 func (t *tcpctx) recvPkg(buf *bytes.Buffer) (quitLoop bool, _ error) {
+	// Create span for package reception
+	ctx := context.Background()
+	spanName := fmt.Sprintf("tcp.recv_pkg.%d", t.uid)
+	ctx, span := tracing.StartSpanFromContext(ctx, spanName)
+	defer span.End()
+
+	// Set span tags
+	span.SetTag("component", "tcp_transport")
+	span.SetTag("connection.uid", t.uid)
+	span.SetTag("connection.remote_addr", t.remoteAddr.String())
+	span.SetTag("connection.local_addr", t.localAddr.String())
+
 	// 1. read prehead
 	t.setReadDeadline()
 	preHead, ok := t.readPreHead()
 	if !ok {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "read_prehead")
+		span.LogKV("error.message", "readPreHead fail")
 		return true, errors.New("readPreHead fail")
 	}
+
+	// Set prehead info in span
+	span.SetTag("message.hdr_size", preHead.HdrSize)
+	span.SetTag("message.body_size", preHead.BodySize)
 
 	// 2. read body
 	pkgLen := preHead.HdrSize + preHead.BodySize
@@ -423,32 +443,66 @@ func (t *tcpctx) recvPkg(buf *bytes.Buffer) (quitLoop bool, _ error) {
 	pkgBuf := buf.Bytes()[:pkgLen]
 	n, err := t.conn.Read(pkgBuf)
 	if err != nil {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "read_body")
+		span.LogKV("error.message", "is stoped by: "+err.Error())
 		return true, errors.New("is stoped by: " + err.Error())
 	}
 
 	if n != int(pkgLen) {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "length_mismatch")
+		span.LogKV("error.message", "read pkg: lens not match")
 		return true, errors.New("read pkg: lens not match")
 	}
 
 	// 3. decode cs msg
 	pkg, err := DecodeCSPkg(preHead, pkgBuf, t.transport.creator)
 	if err != nil {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "decode")
+		span.LogKV("error.message", "decode: "+err.Error())
 		return false, errors.New("decode: " + err.Error())
 	}
 	if pkg.PkgHdr == nil {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "nil_header")
+		span.LogKV("error.message", "pkg hdr is nil")
 		return false, errors.New("pkg hdr is nil")
 	}
+
+	// Set message info in span
+	span.SetTag("message.id", pkg.PkgHdr.GetMsgID())
+	span.SetTag("message.dst_actor_id", pkg.PkgHdr.GetDstActorID())
+	span.SetTag("message.src_actor_id", pkg.PkgHdr.GetSrcActorID())
+
 	// check uid
 	if pkg.PkgHdr.GetDstActorID() != t.uid {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "uid_mismatch")
+		span.LogKV("error.message", fmt.Sprintf("UID mismatch: expected %d, got %d", t.uid, pkg.PkgHdr.GetDstActorID()))
 		// do nothing
 	}
 
-	ctx := &TransportDelivery{
+	// Log successful package reception
+	span.LogFields(
+		tracing.LogField{Key: "event", Value: "package_received"},
+		tracing.LogField{Key: "package_size", Value: int(pkgLen)},
+	)
+
+	delivery := &TransportDelivery{
 		TransSendBack: t.SendToClient,
 		Pkg:           pkg,
 	}
 
-	return false, t.transport.receiver.OnRecvTransportPkg(ctx)
+	err = t.transport.receiver.OnRecvTransportPkg(delivery)
+	if err != nil {
+		span.SetTag("error", true)
+		span.SetTag("error.type", "dispatch")
+		span.LogKV("error.message", err.Error())
+	}
+
+	return false, err
 }
 
 func (t *tcpctx) serveRecv() {

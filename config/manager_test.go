@@ -673,8 +673,6 @@ maxConns: %d
 		}(i)
 	}
 
-	}
-
 	wg.Wait()
 	close(errors)
 
@@ -1458,4 +1456,3 @@ maxConns: %d
 		t.Errorf("Expected LastConfigName 'partial', got '%s'", listener.LastConfigName)
 	}
 }
-

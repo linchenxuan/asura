@@ -18,14 +18,17 @@
 package net
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/lcx/asura/config"
 	"github.com/lcx/asura/log"
 	"github.com/lcx/asura/metrics"
+	"github.com/lcx/asura/tracing"
 )
 
 // DispatcherDelivery extends TransportDelivery to include protocol information and response options
@@ -268,8 +271,17 @@ type Dispatcher struct {
 //
 // Reference: <mcfile name="dispatcher.go" path="/root/asura/net/dispatcher.go"></mcfile>
 func NewDispatcher(cfg *DispatcherConfig, msgMgr *MessageManager, trans []Transport) (*Dispatcher, error) {
+	// Use default configuration if nil is provided
 	if cfg == nil {
-		return nil, errors.New("DispatcherConfig cannot be nil, use NewDispatcherWithConfigManager for dynamic configuration")
+		cfg = &DispatcherConfig{
+			RecvRateLimit: 10000, // Default rate limit
+			TokenBurst:    1000,  // Default token burst
+		}
+	}
+
+	// Validate the configuration
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid dispatcher configuration: %w", err)
 	}
 
 	d := &Dispatcher{
@@ -484,10 +496,32 @@ func (d *Dispatcher) OnRecvTransportPkg(td *TransportDelivery) error {
 		dimensions := metrics.Dimension{
 			"msg_id":    td.Pkg.PkgHdr.GetMsgID(),
 			"msg_layer": string(info.MsgLayerType),
-			"msg_type":  string(info.MsgReqType),
+			"msg_type":  strconv.Itoa(int(info.MsgReqType)),
 		}
 		metrics.IncrCounterWithDimGroup("net_message_type_distribution", "network", 1, dimensions)
 	}
+
+	// 创建上下文
+	ctx := context.Background()
+	// 获取全局tracer
+	tracer := tracing.GlobalTracer()
+	// 创建span，使用消息ID作为操作名称
+	operationName := "message_processing"
+	if info != nil {
+		operationName = info.MsgID
+	}
+	span, _ := tracer.StartSpanFromContext(ctx, operationName)
+	// 在span中添加标签信息
+	span.SetTag("msg_id", td.Pkg.PkgHdr.GetMsgID())
+	span.SetTag("src_actor_id", td.Pkg.PkgHdr.GetSrcActorID())
+	span.SetTag("dst_actor_id", td.Pkg.PkgHdr.GetDstActorID())
+	span.SetTag("src_entity_id", td.Pkg.RouteHdr.GetSrcEntityID())
+	if info != nil {
+		span.SetTag("msg_layer", string(info.MsgLayerType))
+		span.SetTag("msg_type", strconv.Itoa(int(info.MsgReqType)))
+	}
+	// 确保span在函数结束时被关闭
+	defer span.End()
 
 	// 记录处理时间
 	startTime := time.Now()
@@ -496,10 +530,13 @@ func (d *Dispatcher) OnRecvTransportPkg(td *TransportDelivery) error {
 
 	// 记录处理时间
 	metrics.UpdateGaugeWithGroup("net_message_processing_time", "network", metrics.Value(duration))
+	span.SetTag("processing_time_ms", duration)
 
 	// 记录错误情况
 	if err != nil {
 		metrics.IncrCounterWithGroup("net_message_error", "network", 1)
+		span.SetTag("error", true)
+		span.LogFields(tracing.LogField{Key: "error_message", Value: err.Error()})
 	}
 
 	return err

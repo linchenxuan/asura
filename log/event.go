@@ -2,8 +2,21 @@ package log
 
 import (
 	"bytes"
+	"context"
 	"strconv"
 	"time"
+)
+
+// Define context keys for trace information
+type traceContextKey string
+
+const (
+	// TraceIDKey is the key for trace ID in context
+	TraceIDKey traceContextKey = "trace_id"
+	// SpanIDKey is the key for span ID in context
+	SpanIDKey traceContextKey = "span_id"
+	// ParentSpanIDKey is the key for parent span ID in context
+	ParentSpanIDKey traceContextKey = "parent_span_id"
 )
 
 // LogEvent represents a single structured logging event.
@@ -156,6 +169,34 @@ func (e *LogEvent) Ints(k string, v []int) *LogEvent {
 
 	AppendKey(e.buf, k)
 	AppendInts(e.buf, v)
+
+	return e
+}
+
+// Context adds trace information from the provided context to the log event.
+// This method extracts trace_id, span_id, and parent_span_id from the context
+// and adds them as structured fields to the log event.
+// Returns the LogEvent instance to support method chaining.
+func (e *LogEvent) Context(ctx context.Context) *LogEvent {
+	if e == nil || ctx == nil {
+		return e
+	}
+
+	// Extract trace information from context
+	if traceID, ok := ctx.Value(TraceIDKey).(string); ok && traceID != "" {
+		AppendKey(e.buf, "trace_id")
+		e.buf.WriteString(`"` + traceID + `"`)
+	}
+
+	if spanID, ok := ctx.Value(SpanIDKey).(string); ok && spanID != "" {
+		AppendKey(e.buf, "span_id")
+		e.buf.WriteString(`"` + spanID + `"`)
+	}
+
+	if parentSpanID, ok := ctx.Value(ParentSpanIDKey).(string); ok && parentSpanID != "" {
+		AppendKey(e.buf, "parent_span_id")
+		e.buf.WriteString(`"` + parentSpanID + `"`)
+	}
 
 	return e
 }

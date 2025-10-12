@@ -214,7 +214,7 @@ func TestStopWatchHelperFunctions(t *testing.T) {
 	startTime3 := time.Now()
 	time.Sleep(4 * time.Millisecond)
 	dimensions := Dimension{"operation": "query", "database": "users"}
-	duration3 := RecordStopwatchWithDimGroup("dim_stopwatch", "perf_group", dimensions, startTime3)
+	duration3 := RecordStopwatchWithDimGroup("dim_stopwatch", "perf_group", startTime3, dimensions)
 
 	// 检查返回的持续时间是否合理
 	if duration3 < 4*time.Millisecond || duration3 > 40*time.Millisecond {

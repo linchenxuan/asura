@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/lcx/asura/config"
-	"github.com/lcx/asura/log"
 )
 
 // Global tracer instance
@@ -32,7 +31,6 @@ func InitTracing() (Tracer, error) {
 	// If configuration loading fails, use default settings to ensure system availability
 	cfg := DefaultTracerConfig()
 	if err := configMgr.LoadConfig("tracing", &cfg); err != nil {
-		log.Error().Err(err).Msg("Failed to load tracing configuration, using default settings")
 		// Use default configuration when loading fails to maintain system stability
 		cfg = DefaultTracerConfig()
 	}
@@ -40,7 +38,6 @@ func InitTracing() (Tracer, error) {
 	// Create tracer using builder pattern for flexible configuration
 	tracer, err := buildTracer(&cfg)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to build tracer")
 		return nil, err
 	}
 
@@ -79,7 +76,6 @@ func (l *tracingConfigListener) OnConfigChanged(configName string, newConfig, ol
 	// Type assertion to ensure we're working with the correct configuration type
 	newCfg, ok := newConfig.(*TracerConfig)
 	if !ok {
-		log.Error().Msg("Failed to type assert new configuration to TracerConfig")
 		return nil
 	}
 

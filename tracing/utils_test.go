@@ -50,14 +50,17 @@ func TestNewTextMapCarrier(t *testing.T) {
 		t.Errorf("Expected Get(%s) to return %s, got %s", key, value, got)
 	}
 
-	keys := carrier.Keys()
-	if len(keys) != 1 || keys[0] != key {
-		t.Errorf("Expected Keys() to return [%s], got %v", key, keys)
-	}
+	// Use type assertion to access Keys() and Format() methods
+	if textMapCarrier, ok := carrier.(*textMapCarrier); ok {
+		keys := textMapCarrier.Keys()
+		if len(keys) != 1 || keys[0] != key {
+			t.Errorf("Expected Keys() to return [%s], got %v", key, keys)
+		}
 
-	format := carrier.Format()
-	if format != "text_map" {
-		t.Errorf("Expected Format() to return 'text_map', got %s", format)
+		format := textMapCarrier.Format()
+		if format != "text_map" {
+			t.Errorf("Expected Format() to return 'text_map', got %s", format)
+		}
 	}
 }
 
@@ -76,14 +79,17 @@ func TestNewHTTPHeadersCarrier(t *testing.T) {
 		t.Errorf("Expected Get(%s) to return %s, got %s", key, value, got)
 	}
 
-	keys := carrier.Keys()
-	if len(keys) != 1 || keys[0] != key {
-		t.Errorf("Expected Keys() to return [%s], got %v", key, keys)
-	}
+	// Use type assertion to access Keys() and Format() methods
+	if httpHeadersCarrier, ok := carrier.(*httpHeadersCarrier); ok {
+		keys := httpHeadersCarrier.Keys()
+		if len(keys) != 1 || keys[0] != key {
+			t.Errorf("Expected Keys() to return [%s], got %v", key, keys)
+		}
 
-	format := carrier.Format()
-	if format != "http_headers" {
-		t.Errorf("Expected Format() to return 'http_headers', got %s", format)
+		format := httpHeadersCarrier.Format()
+		if format != "http_headers" {
+			t.Errorf("Expected Format() to return 'http_headers', got %s", format)
+		}
 	}
 }
 

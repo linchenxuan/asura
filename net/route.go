@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"math/rand"
 	"time"
 )
 
@@ -540,7 +541,7 @@ func NewRouteContext(ctx context.Context, route Route) *RouteContext {
 }
 
 // generateTraceID generates a unique trace identifier using timestamp
-// Returns: A string representation of a unique trace ID based on current timestamp
+// Returns: A string representation of a unique trace ID
 func generateTraceID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	return fmt.Sprintf("trace-%d-%d", time.Now().UnixNano(), rand.Int63())
 }

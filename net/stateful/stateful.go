@@ -4,6 +4,7 @@
 package stateful
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/lcx/asura/log"
 	"github.com/lcx/asura/metrics"
 	"github.com/lcx/asura/net"
+	"github.com/lcx/asura/tracing"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -196,6 +198,17 @@ func (layer *StatefulMsgLayer) handleDispacherPkg(delivery *net.DispatcherDelive
 // It retrieves or creates the actor runtime, creates a handle context,
 // and posts the message for processing.
 func (layer *StatefulMsgLayer) handleActorPkg(aid uint64, delivery *net.DispatcherDelivery) (err error) {
+	// Create span for actor message processing
+	ctx := context.Background()
+	spanName := fmt.Sprintf("stateful.actor.%d", aid)
+	ctx, span := tracing.StartSpanFromContext(ctx, spanName)
+	defer span.End()
+
+	// Set span tags
+	span.SetTag("component", "stateful_actor")
+	span.SetTag("actor.id", aid)
+	span.SetTag("message.id", delivery.Pkg.PkgHdr.GetMsgID())
+
 	startTime := time.Now()
 	metrics.IncrCounterWithGroup("net.stateful", "actor_message_total", 1)
 	defer metrics.RecordStopwatchWithGroup("net.stateful", "actor_message_process_time", startTime)
@@ -203,17 +216,36 @@ func (layer *StatefulMsgLayer) handleActorPkg(aid uint64, delivery *net.Dispatch
 	ar, ok := layer.actorMgr.getActorRuntime(aid)
 	hCtx := &HandleContext{}
 	if !ok {
+		// Log actor creation
+		span.LogFields(
+			tracing.LogField{Key: "event", Value: "actor_create"},
+			tracing.LogField{Key: "message", Value: fmt.Sprintf("Creating new actor %d", aid)},
+		)
+
 		hCtx = newHandleContext(aid, delivery, ar.actor)
 		ar, err = layer.tryGetActorRuntime(hCtx)
 		if err != nil {
 			metrics.IncrCounterWithDimGroup("net.stateful", "actor_error_total", 1, map[string]string{"error_type": "create_actor"})
+			span.SetTag("error", true)
+			span.SetTag("error.type", "create_actor")
+			span.LogKV("error.message", err.Error())
 			return err
 		}
 	}
+
 	hCtx = newHandleContext(aid, delivery, ar.actor)
 	if err = ar.postPkg(hCtx); err != nil {
 		metrics.IncrCounterWithDimGroup("net.stateful", "actor_error_total", 1, map[string]string{"error_type": "post_message"})
+		span.SetTag("error", true)
+		span.SetTag("error.type", "post_message")
+		span.LogKV("error.message", err.Error())
 	}
+
+	// Log successful processing
+	span.LogFields(
+		tracing.LogField{Key: "event", Value: "message_processed"},
+		tracing.LogField{Key: "processing_time_ms", Value: time.Since(startTime).Milliseconds()},
+	)
 
 	return
 }

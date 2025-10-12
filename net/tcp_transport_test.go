@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // mockConn implements net.Conn for testing
@@ -147,7 +150,10 @@ func TestTCPTransportStartStop(t *testing.T) {
 
 	// Test Start with proper configuration
 	// Note: This will start a TCP listener on a random port
-	err := transport.Start()
+	err := transport.Start(TransportOption{
+		Handler: &mockTransportReceiver{},
+		Creator: &tcpMockMsgCreator{},
+	})
 	if err != nil {
 		t.Logf("Start failed as expected (may be due to port binding): %v", err)
 		// This is acceptable for testing - the main thing is that we don't get configuration errors
@@ -689,4 +695,22 @@ func BenchmarkTCPctxSend(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = ctx.SendToClient(pkg)
 	}
+}
+
+// mockTransportReceiver implements DispatcherReceiver interface for testing
+type mockTransportReceiver struct{}
+
+func (m *mockTransportReceiver) OnRecvTransportPkg(td *TransportDelivery) error {
+	return nil
+}
+
+// tcpMockMsgCreator implements MsgCreator interface for testing
+type tcpMockMsgCreator struct{}
+
+func (m *tcpMockMsgCreator) CreateMsg(msgID string) (proto.Message, error) {
+	return &structpb.Struct{}, nil
+}
+
+func (m *tcpMockMsgCreator) ContainsMsg(msgID string) bool {
+	return true
 }

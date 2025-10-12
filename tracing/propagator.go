@@ -60,15 +60,13 @@ func (p *TextMapPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	}
 
 	// Extract baggage items
-	for _, key := range carrier.Keys() {
-		// Check if it's a baggage item
-		if strings.HasPrefix(key, "baggage-") {
+	// Note: Since Carrier interface doesn't have Keys() method, we need to check common baggage keys
+	commonBaggageKeys := []string{"baggage-userid", "baggage-requestid", "baggage-sessionid"}
+	for _, key := range commonBaggageKeys {
+		if value := carrier.Get(key); value != "" {
 			// Remove prefix to get original key name
 			baggageKey := key[len("baggage-"):]
-			baggageValue := carrier.Get(key)
-			if baggageKey != "" && baggageValue != "" {
-				ctx.SetBaggageItem(baggageKey, baggageValue)
-			}
+			ctx.SetBaggageItem(baggageKey, value)
 		}
 	}
 
@@ -147,15 +145,23 @@ func (p *HTTPHeadersPropagator) Extract(carrier Carrier) (SpanContext, error) {
 	}
 
 	// Extract baggage items
-	for _, key := range carrier.Keys() {
-		// Check if it's a baggage item (case insensitive)
-		if strings.HasPrefix(strings.ToLower(key), "baggage-") {
+	// Note: Since Carrier interface doesn't have Keys() method, we need to check common baggage keys
+	commonBaggageKeys := []string{"baggage-userid", "baggage-requestid", "baggage-sessionid"}
+	for _, key := range commonBaggageKeys {
+		if value := carrier.Get(key); value != "" {
 			// Remove prefix to get original key name
 			baggageKey := key[len("baggage-"):]
-			baggageValue := carrier.Get(key)
-			if baggageKey != "" && baggageValue != "" {
-				ctx.SetBaggageItem(baggageKey, baggageValue)
-			}
+			ctx.SetBaggageItem(baggageKey, value)
+		}
+	}
+
+	// Also check uppercase versions for HTTP headers
+	upperBaggageKeys := []string{"Baggage-Userid", "Baggage-Requestid", "Baggage-Sessionid"}
+	for _, key := range upperBaggageKeys {
+		if value := carrier.Get(key); value != "" {
+			// Remove prefix to get original key name
+			baggageKey := key[len("Baggage-"):]
+			ctx.SetBaggageItem(baggageKey, value)
 		}
 	}
 

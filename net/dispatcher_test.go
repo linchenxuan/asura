@@ -275,7 +275,11 @@ func TestStartServe(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := NewDispatcher(nil, msgMgr, tt.transports)
+			cfg := &DispatcherConfig{
+				RecvRateLimit: 10000,
+				TokenBurst:    1000,
+			}
+			d, err := NewDispatcher(cfg, msgMgr, tt.transports)
 			if err != nil {
 				t.Fatalf("NewDispatcher() error = %v", err)
 			}
@@ -302,7 +306,11 @@ func TestStartServe(t *testing.T) {
 // TestRegDispatcherFilter tests filter registration
 func TestRegDispatcherFilter(t *testing.T) {
 	msgMgr := NewMessageManager()
-	d, err := NewDispatcher(nil, msgMgr, []Transport{})
+	cfg := &DispatcherConfig{
+		RecvRateLimit: 10000,
+		TokenBurst:    1000,
+	}
+	d, err := NewDispatcher(cfg, msgMgr, []Transport{})
 	if err != nil {
 		t.Fatalf("NewDispatcher() error = %v", err)
 	}
@@ -335,7 +343,11 @@ func TestOnRecvTransportPkg(t *testing.T) {
 	}
 	msgMgr.PropInfoMap["test.msg"] = protoInfo
 
-	d, err := NewDispatcher(nil, msgMgr, []Transport{})
+	cfg := &DispatcherConfig{
+		RecvRateLimit: 10000,
+		TokenBurst:    1000,
+	}
+	d, err := NewDispatcher(cfg, msgMgr, []Transport{})
 	if err != nil {
 		t.Fatalf("NewDispatcher() error = %v", err)
 	}
@@ -371,7 +383,11 @@ func TestOnRecvTransportPkg(t *testing.T) {
 // TestDispatcherWithFilters tests dispatcher with custom filters
 func TestDispatcherWithFilters(t *testing.T) {
 	msgMgr := NewMessageManager()
-	d, err := NewDispatcher(nil, msgMgr, []Transport{})
+	cfg := &DispatcherConfig{
+		RecvRateLimit: 10000,
+		TokenBurst:    1000,
+	}
+	d, err := NewDispatcher(cfg, msgMgr, []Transport{})
 	if err != nil {
 		t.Fatalf("NewDispatcher() error = %v", err)
 	}
@@ -416,7 +432,11 @@ func TestDispatcherWithFilters(t *testing.T) {
 // TestDispatcherErrorHandling tests error handling in various scenarios
 func TestDispatcherErrorHandling(t *testing.T) {
 	msgMgr := NewMessageManager()
-	d, err := NewDispatcher(nil, msgMgr, []Transport{})
+	cfg := &DispatcherConfig{
+		RecvRateLimit: 10000,
+		TokenBurst:    1000,
+	}
+	d, err := NewDispatcher(cfg, msgMgr, []Transport{})
 	if err != nil {
 		t.Fatalf("NewDispatcher() error = %v", err)
 	}
@@ -463,7 +483,11 @@ func TestDispatcherErrorHandling(t *testing.T) {
 // TestDispatcherConcurrency tests concurrent message processing
 func TestDispatcherConcurrency(t *testing.T) {
 	msgMgr := NewMessageManager()
-	d, err := NewDispatcher(nil, msgMgr, []Transport{})
+	cfg := &DispatcherConfig{
+		RecvRateLimit: 10000,
+		TokenBurst:    1000,
+	}
+	d, err := NewDispatcher(cfg, msgMgr, []Transport{})
 	if err != nil {
 		t.Fatalf("NewDispatcher() error = %v", err)
 	}
