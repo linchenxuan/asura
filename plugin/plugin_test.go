@@ -1,225 +1,683 @@
 package plugin
 
 import (
-	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// mockPlugin is a test implementation of Plugin interface
+// ============================================================================
+// Mock Plugin Implementation (for testing)
+// ============================================================================
+
+// mockPlugin is a test plugin implementation
 type mockPlugin struct {
-	name         string
-	version      string
-	dependencies []string
-	initError    error
-	startError   error
-	stopError    error
-	initialized  bool
-	started      bool
-	stopped      bool
+	factoryName   string
+	config        map[string]any
+	setupCount    int32
+	destroyCount  int32
+	reloadCount   int32
+	canDelete     bool
+	reloadError   error
+	destroyError  error
+	activeTaskCnt int32 // Simulate active tasks (connections, transactions, etc.)
 }
 
-func newMockPlugin(name, version string, dependencies []string) *mockPlugin {
-	return &mockPlugin{
-		name:         name,
-		version:      version,
-		dependencies: dependencies,
+func (m *mockPlugin) FactoryName() string {
+	return m.factoryName
+}
+
+func (m *mockPlugin) GetSetupCount() int {
+	return int(atomic.LoadInt32(&m.setupCount))
+}
+
+func (m *mockPlugin) GetDestroyCount() int {
+	return int(atomic.LoadInt32(&m.destroyCount))
+}
+
+func (m *mockPlugin) GetReloadCount() int {
+	return int(atomic.LoadInt32(&m.reloadCount))
+}
+
+func (m *mockPlugin) GetActiveTaskCount() int {
+	return int(atomic.LoadInt32(&m.activeTaskCnt))
+}
+
+func (m *mockPlugin) SetActiveTaskCount(count int) {
+	atomic.StoreInt32(&m.activeTaskCnt, int32(count))
+}
+
+// mockFactory is a test factory implementation
+type mockFactory struct {
+	pluginType    Type
+	factoryName   string
+	setupError    error
+	destroyError  error
+	reloadError   error
+	canDelete     bool
+	setupDelay    time.Duration
+	destroyDelay  time.Duration
+	createdPlugin *mockPlugin
+	mu            sync.Mutex
+}
+
+func newMockFactory(pluginType Type, factoryName string) *mockFactory {
+	return &mockFactory{
+		pluginType:  pluginType,
+		factoryName: factoryName,
+		canDelete:   true,
 	}
 }
 
-func (p *mockPlugin) Name() string {
-	return p.name
+func (f *mockFactory) Type() Type {
+	return f.pluginType
 }
 
-func (p *mockPlugin) Version() string {
-	return p.version
+func (f *mockFactory) Name() string {
+	return f.factoryName
 }
 
-func (p *mockPlugin) Dependencies() []string {
-	return p.dependencies
-}
-
-func (p *mockPlugin) Init() error {
-	if p.initError != nil {
-		return p.initError
+func (f *mockFactory) Setup(v map[string]any) (Plugin, error) {
+	if f.setupDelay > 0 {
+		time.Sleep(f.setupDelay)
 	}
-	p.initialized = true
+
+	if f.setupError != nil {
+		return nil, f.setupError
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	plugin := &mockPlugin{
+		factoryName:  f.factoryName,
+		config:       v,
+		canDelete:    f.canDelete,
+		reloadError:  f.reloadError,
+		destroyError: f.destroyError,
+	}
+	atomic.AddInt32(&plugin.setupCount, 1)
+	f.createdPlugin = plugin
+
+	return plugin, nil
+}
+
+func (f *mockFactory) Destroy(p Plugin, _ any) error {
+	if f.destroyDelay > 0 {
+		time.Sleep(f.destroyDelay)
+	}
+
+	if f.destroyError != nil {
+		return f.destroyError
+	}
+
+	if mp, ok := p.(*mockPlugin); ok {
+		atomic.AddInt32(&mp.destroyCount, 1)
+	}
+
 	return nil
 }
 
-func (p *mockPlugin) Start() error {
-	if p.startError != nil {
-		return p.startError
+func (f *mockFactory) Reload(p Plugin, v map[string]any) error {
+	if f.reloadError != nil {
+		return f.reloadError
 	}
-	p.started = true
+
+	if mp, ok := p.(*mockPlugin); ok {
+		atomic.AddInt32(&mp.reloadCount, 1)
+		mp.config = v
+	}
+
 	return nil
 }
 
-func (p *mockPlugin) Stop() error {
-	if p.stopError != nil {
-		return p.stopError
+func (f *mockFactory) CanDelete(p Plugin) bool {
+	if mp, ok := p.(*mockPlugin); ok {
+		// Check if plugin has active tasks
+		return mp.GetActiveTaskCount() == 0
 	}
-	p.stopped = true
-	return nil
+	return f.canDelete
 }
 
-func (p *mockPlugin) IsInitialized() bool {
-	return p.initialized
+func (f *mockFactory) GetCreatedPlugin() *mockPlugin {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createdPlugin
 }
 
-func (p *mockPlugin) IsStarted() bool {
-	return p.started
+// ============================================================================
+// Test Helper Functions
+// ============================================================================
+
+// resetPluginManager resets global plugin manager state (for test isolation)
+func resetPluginManager() {
+	_pluginLock.Lock()
+	defer _pluginLock.Unlock()
+
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_factoryMap = make(map[string]Factory)
 }
 
-func (p *mockPlugin) IsStopped() bool {
-	return p.stopped
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+func TestPluginConfig_GetName(t *testing.T) {
+	cfg := PluginConfig{}
+	assert.Equal(t, "plugin", cfg.GetName())
 }
 
-func TestPluginStatus_String(t *testing.T) {
+func TestPluginConfig_Validate(t *testing.T) {
 	tests := []struct {
-		status PluginStatus
-		want   string
+		name    string
+		config  PluginConfig
+		wantErr bool
+		errMsg  string
 	}{
-		{PluginStatusUnknown, "unknown"},
-		{PluginStatusRegistered, "registered"},
-		{PluginStatusInitialized, "initialized"},
-		{PluginStatusStarted, "started"},
-		{PluginStatusStopped, "stopped"},
-		{PluginStatusError, "error"},
-		{PluginStatus(999), "unknown"}, // invalid status
+		{
+			name:    "empty config",
+			config:  PluginConfig{},
+			wantErr: true,
+			errMsg:  "plugin config is empty",
+		},
+		{
+			name: "empty factory config",
+			config: PluginConfig{
+				"db": {},
+			},
+			wantErr: true,
+			errMsg:  "plugin type db has no factory config",
+		},
+		{
+			name: "empty instance config",
+			config: PluginConfig{
+				"db": {
+					"mysql": {},
+				},
+			},
+			wantErr: true,
+			errMsg:  "plugin db_mysql has no instance config",
+		},
+		{
+			name: "valid config",
+			config: PluginConfig{
+				"db": {
+					"mysql": {
+						"host": "localhost",
+						"port": 3306,
+					},
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.status.String(); got != tt.want {
-				t.Errorf("PluginStatus.String() = %v, want %v", got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
 }
 
-func TestPluginInfo(t *testing.T) {
-	now := time.Now()
-	info := PluginInfo{
-		Name:         "test-plugin",
-		Version:      "1.0.0",
-		Status:       PluginStatusStarted,
-		Dependencies: []string{"dep1", "dep2"},
-		StartTime:    now,
-		StopTime:     now.Add(time.Hour),
-		Error:        nil,
+func TestRegisterPlugin(t *testing.T) {
+	resetPluginManager()
+
+	factory := newMockFactory(DB, "mysql")
+	RegisterPlugin(factory)
+
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+
+	key := "db_mysql"
+	assert.Contains(t, _factoryMap, key)
+	assert.Equal(t, factory, _factoryMap[key])
+}
+
+func TestRegisterPlugin_Concurrent(t *testing.T) {
+	resetPluginManager()
+
+	var wg sync.WaitGroup
+	factoryCount := 100
+
+	// Concurrent registration (stress test for Linux multi-core environment)
+	for i := 0; i < factoryCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			factory := newMockFactory(DB, fmt.Sprintf("test%d", idx))
+			RegisterPlugin(factory)
+		}(i)
 	}
 
-	if info.Name != "test-plugin" {
-		t.Errorf("Expected name 'test-plugin', got %s", info.Name)
+	wg.Wait()
+
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+
+	assert.Equal(t, factoryCount, len(_factoryMap))
+}
+
+func TestGetPluginFactory(t *testing.T) {
+	resetPluginManager()
+
+	factory := newMockFactory(DB, "mysql")
+	RegisterPlugin(factory)
+
+	// Test successful retrieval
+	result := getPluginFactory("db", "mysql")
+	assert.NotNil(t, result)
+	assert.Equal(t, factory, result)
+
+	// Test non-existent factory
+	result = getPluginFactory("db", "nonexistent")
+	assert.Nil(t, result)
+}
+
+func TestGetPluginNameFromCfg(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   map[string]any
+		expected string
+	}{
+		{
+			name:     "no tag",
+			config:   map[string]any{"host": "localhost"},
+			expected: DefaultInsName,
+		},
+		{
+			name:     "with tag",
+			config:   map[string]any{"tag": "master", "host": "localhost"},
+			expected: "master",
+		},
+		{
+			name:     "invalid tag type",
+			config:   map[string]any{"tag": 123},
+			expected: DefaultInsName,
+		},
 	}
-	if info.Version != "1.0.0" {
-		t.Errorf("Expected version '1.0.0', got %s", info.Version)
-	}
-	if info.Status != PluginStatusStarted {
-		t.Errorf("Expected status PluginStatusStarted, got %v", info.Status)
-	}
-	if len(info.Dependencies) != 2 {
-		t.Errorf("Expected 2 dependencies, got %d", len(info.Dependencies))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getPluginNameFromCfg(tt.config)
+			assert.Equal(t, tt.expected, result)
+		})
 	}
 }
 
-func TestPluginError(t *testing.T) {
-	originalErr := errors.New("original error")
-	pluginErr := NewPluginError("test-plugin", "start", originalErr)
-
-	// Test Error() method
-	expectedMsg := "plugin test-plugin start failed: original error"
-	if pluginErr.Error() != expectedMsg {
-		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, pluginErr.Error())
+func TestGetFactoryName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"mysql", "mysql"},
+		{"mysql_master", "mysql"},
+		{"redis_slave_1", "redis"},
 	}
 
-	// Test Unwrap() method
-	if pluginErr.Unwrap() != originalErr {
-		t.Errorf("Expected unwrapped error to be original error")
-	}
-
-	// Test fields
-	if pluginErr.PluginName != "test-plugin" {
-		t.Errorf("Expected PluginName 'test-plugin', got '%s'", pluginErr.PluginName)
-	}
-	if pluginErr.Operation != "start" {
-		t.Errorf("Expected Operation 'start', got '%s'", pluginErr.Operation)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := getFactoryName(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
 	}
 }
 
-func TestPluginContext(t *testing.T) {
-	ctx := PluginContext{
-		Context: nil, // can be nil for testing
+func TestRegisterPluginIns(t *testing.T) {
+	resetPluginManager()
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+
+	// Test first registration
+	err := registerPluginIns("db", "mysql", "master", plugin)
+	require.NoError(t, err)
+
+	// Test duplicate registration
+	err = registerPluginIns("db", "mysql", "master", plugin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin master already exists")
+
+	// Test different instance name
+	err = registerPluginIns("db", "mysql", "slave", plugin)
+	require.NoError(t, err)
+}
+
+func TestGetPlugin(t *testing.T) {
+	resetPluginManager()
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+	err := registerPluginIns("db", "mysql", "master", plugin)
+	require.NoError(t, err)
+
+	// Test successful retrieval
+	result, err := GetPlugin("db", "mysql", "master")
+	require.NoError(t, err)
+	assert.Equal(t, plugin, result)
+
+	// Test non-existent type
+	_, err = GetPlugin("nonexistent", "mysql", "master")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin type [nonexistent] not registered")
+
+	// Test non-existent factory
+	_, err = GetPlugin("db", "nonexistent", "master")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin factory [db/nonexistent] not found")
+
+	// Test non-existent instance
+	_, err = GetPlugin("db", "mysql", "nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin instance [db/mysql/nonexistent] not found")
+}
+
+func TestGetDefaultPlugin(t *testing.T) {
+	resetPluginManager()
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+	err := registerPluginIns("db", "mysql", DefaultInsName, plugin)
+	require.NoError(t, err)
+
+	result, err := GetDefaultPlugin("db", "mysql")
+	require.NoError(t, err)
+	assert.Equal(t, plugin, result)
+}
+
+func TestMustGetPlugin(t *testing.T) {
+	resetPluginManager()
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+	err := registerPluginIns("db", "mysql", "master", plugin)
+	require.NoError(t, err)
+
+	// Test successful retrieval (should not panic)
+	result := MustGetPlugin("db", "mysql", "master")
+	assert.Equal(t, plugin, result)
+}
+
+func TestListPlugins(t *testing.T) {
+	resetPluginManager()
+
+	plugin1 := &mockPlugin{factoryName: "mysql"}
+	plugin2 := &mockPlugin{factoryName: "mysql"}
+	plugin3 := &mockPlugin{factoryName: "redis"}
+
+	err := registerPluginIns("db", "mysql", "master", plugin1)
+	require.NoError(t, err)
+	err = registerPluginIns("db", "mysql", "slave", plugin2)
+	require.NoError(t, err)
+	err = registerPluginIns("db", "redis", DefaultInsName, plugin3)
+	require.NoError(t, err)
+
+	result := ListPlugins()
+
+	assert.Len(t, result, 2)
+	assert.ElementsMatch(t, []string{"master", "slave"}, result["db/mysql"])
+	assert.ElementsMatch(t, []string{DefaultInsName}, result["db/redis"])
+}
+
+func TestValidatePluginConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		pluginType Type
+		config     map[string]any
+		wantErr    bool
+		errMsg     string
+	}{
+		{
+			name:       "empty config",
+			pluginType: DB,
+			config:     map[string]any{},
+			wantErr:    true,
+			errMsg:     "config is empty",
+		},
+		{
+			name:       "db missing host",
+			pluginType: DB,
+			config:     map[string]any{"port": 3306},
+			wantErr:    true,
+			errMsg:     "missing required field: host",
+		},
+		{
+			name:       "db missing port",
+			pluginType: DB,
+			config:     map[string]any{"host": "localhost"},
+			wantErr:    true,
+			errMsg:     "missing required field: port",
+		},
+		{
+			name:       "db valid config",
+			pluginType: DB,
+			config:     map[string]any{"host": "localhost", "port": 3306},
+			wantErr:    false,
+		},
+		{
+			name:       "transport missing addr",
+			pluginType: CSTransport,
+			config:     map[string]any{"timeout": 30},
+			wantErr:    true,
+			errMsg:     "missing required field: addr",
+		},
+		{
+			name:       "transport valid config",
+			pluginType: CSTransport,
+			config:     map[string]any{"addr": ":8080"},
+			wantErr:    false,
+		},
 	}
 
-	if ctx.Context != nil {
-		t.Errorf("Expected context to be nil for testing")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := newMockFactory(tt.pluginType, "test")
+			err := validatePluginConfig(factory, tt.config)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
 	}
 }
 
-func TestMockPlugin(t *testing.T) {
-	plugin := newMockPlugin("test", "1.0.0", []string{"dep1"})
+func TestRollbackPlugins(t *testing.T) {
+	resetPluginManager()
 
-	// Test basic properties
-	if plugin.Name() != "test" {
-		t.Errorf("Expected name 'test', got '%s'", plugin.Name())
-	}
-	if plugin.Version() != "1.0.0" {
-		t.Errorf("Expected version '1.0.0', got '%s'", plugin.Version())
-	}
-	if len(plugin.Dependencies()) != 1 || plugin.Dependencies()[0] != "dep1" {
-		t.Errorf("Expected dependencies ['dep1'], got %v", plugin.Dependencies())
-	}
+	factory := newMockFactory(DB, "mysql")
+	RegisterPlugin(factory)
 
-	// Test lifecycle
-	// Test Init
-	if err := plugin.Init(); err != nil {
-		t.Errorf("Expected no error during Init, got %v", err)
-	}
-	if !plugin.IsInitialized() {
-		t.Errorf("Expected plugin to be initialized")
-	}
+	plugin1 := &mockPlugin{factoryName: "mysql"}
+	plugin2 := &mockPlugin{factoryName: "mysql"}
 
-	// Test Start
-	if err := plugin.Start(); err != nil {
-		t.Errorf("Expected no error during Start, got %v", err)
-	}
-	if !plugin.IsStarted() {
-		t.Errorf("Expected plugin to be started")
+	err := registerPluginIns("db", "mysql", "master", plugin1)
+	require.NoError(t, err)
+	err = registerPluginIns("db", "mysql", "slave", plugin2)
+	require.NoError(t, err)
+
+	plugins := []struct {
+		ft, fn, pn string
+		ins        Plugin
+	}{
+		{"db", "mysql", "master", plugin1},
+		{"db", "mysql", "slave", plugin2},
 	}
 
-	// Test Stop
-	if err := plugin.Stop(); err != nil {
-		t.Errorf("Expected no error during Stop, got %v", err)
+	rollbackPlugins(plugins)
+
+	// Verify plugins are destroyed
+	assert.Equal(t, 1, plugin1.GetDestroyCount())
+	assert.Equal(t, 1, plugin2.GetDestroyCount())
+
+	// Verify plugin manager is cleared
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+	assert.Empty(t, _pluginMgr.insMap)
+}
+
+func TestListAvailableFactories(t *testing.T) {
+	resetPluginManager()
+
+	// Register multiple factories
+	factory1 := newMockFactory(DB, "mysql")
+	factory2 := newMockFactory(DB, "postgres")
+	factory3 := newMockFactory(DB, "redis")
+
+	RegisterPlugin(factory1)
+	RegisterPlugin(factory2)
+	RegisterPlugin(factory3)
+
+	// Test list DB factories
+	result := listAvailableFactories("db")
+	assert.Len(t, result, 3)
+	assert.Contains(t, result, "mysql")
+	assert.Contains(t, result, "postgres")
+	assert.Contains(t, result, "redis")
+
+	// Test list non-existent factory type
+	result = listAvailableFactories("nonexistent")
+	assert.Empty(t, result)
+
+	// Test empty result after reset
+	resetPluginManager()
+	result = listAvailableFactories("db")
+	assert.Empty(t, result)
+}
+
+// ============================================================================
+// Concurrency Tests (Linux Multi-Core Environment)
+// ============================================================================
+
+func TestConcurrentPluginAccess(t *testing.T) {
+	resetPluginManager()
+
+	factory := newMockFactory(DB, "mysql")
+	RegisterPlugin(factory)
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+	err := registerPluginIns("db", "mysql", DefaultInsName, plugin)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	goroutineCount := 1000
+
+	// Concurrent read access (stress test for RWMutex)
+	for i := 0; i < goroutineCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p, err := GetDefaultPlugin("db", "mysql")
+			assert.NoError(t, err)
+			assert.NotNil(t, p)
+		}()
 	}
-	if !plugin.IsStopped() {
-		t.Errorf("Expected plugin to be stopped")
+
+	wg.Wait()
+}
+
+func TestConcurrentPluginRegistration(t *testing.T) {
+	resetPluginManager()
+
+	var wg sync.WaitGroup
+	pluginCount := 100
+
+	// Concurrent plugin registration and retrieval
+	for i := 0; i < pluginCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			factoryName := fmt.Sprintf("test%d", idx)
+			factory := newMockFactory(DB, factoryName)
+			RegisterPlugin(factory)
+
+			plugin := &mockPlugin{factoryName: factoryName}
+			err := registerPluginIns("db", factoryName, DefaultInsName, plugin)
+			assert.NoError(t, err)
+
+			// Immediately try to retrieve
+			p, err := GetDefaultPlugin("db", factoryName)
+			assert.NoError(t, err)
+			assert.Equal(t, plugin, p)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify all plugins are registered
+	result := ListPlugins()
+	assert.Len(t, result, pluginCount)
+}
+
+// ============================================================================
+// Performance Benchmark Tests (Linux Environment)
+// ============================================================================
+
+func BenchmarkGetPlugin(b *testing.B) {
+	resetPluginManager()
+
+	factory := newMockFactory(DB, "mysql")
+	RegisterPlugin(factory)
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+	_ = registerPluginIns("db", "mysql", DefaultInsName, plugin)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = GetPlugin("db", "mysql", DefaultInsName)
+		}
+	})
+}
+
+func BenchmarkGetDefaultPlugin(b *testing.B) {
+	resetPluginManager()
+
+	factory := newMockFactory(DB, "mysql")
+	RegisterPlugin(factory)
+
+	plugin := &mockPlugin{factoryName: "mysql"}
+	_ = registerPluginIns("db", "mysql", DefaultInsName, plugin)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = GetDefaultPlugin("db", "mysql")
+		}
+	})
+}
+
+func BenchmarkRegisterPlugin(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resetPluginManager()
+		factory := newMockFactory(DB, fmt.Sprintf("test%d", i))
+		RegisterPlugin(factory)
 	}
 }
 
-func TestMockPlugin_WithErrors(t *testing.T) {
-	initErr := errors.New("init error")
-	startErr := errors.New("start error")
-	stopErr := errors.New("stop error")
+func BenchmarkListPlugins(b *testing.B) {
+	resetPluginManager()
 
-	plugin := newMockPlugin("test", "1.0.0", nil)
-	plugin.initError = initErr
-	plugin.startError = startErr
-	plugin.stopError = stopErr
-
-	// Test Init with error
-	if err := plugin.Init(); err != initErr {
-		t.Errorf("Expected init error, got %v", err)
+	// Setup 100 plugins
+	for i := 0; i < 100; i++ {
+		factory := newMockFactory(DB, fmt.Sprintf("test%d", i))
+		RegisterPlugin(factory)
+		plugin := &mockPlugin{factoryName: fmt.Sprintf("test%d", i)}
+		_ = registerPluginIns("db", fmt.Sprintf("test%d", i), DefaultInsName, plugin)
 	}
 
-	// Test Start with error
-	if err := plugin.Start(); err != startErr {
-		t.Errorf("Expected start error, got %v", err)
-	}
-
-	// Test Stop with error
-	if err := plugin.Stop(); err != stopErr {
-		t.Errorf("Expected stop error, got %v", err)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ListPlugins()
 	}
 }

@@ -1,511 +1,287 @@
 package plugin
 
 import (
-	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
-func TestNewPluginManager(t *testing.T) {
-	pm := NewPluginManager()
-	if pm == nil {
-		t.Fatal("Expected plugin manager to be created, got nil")
+// TestRegisterPluginIns_FirstRegistration tests first time plugin registration
+func TestRegisterPluginIns_FirstRegistration(t *testing.T) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
+
+	plugin := &mockPlugin{
+		factoryName: "test_factory",
+		config:      map[string]any{"name": "test"},
 	}
 
-	// Test that no plugins are initially registered
-	plugins := pm.ListPlugins()
-	if len(plugins) != 0 {
-		t.Errorf("Expected no plugins initially, got %d", len(plugins))
-	}
-}
-
-func TestPluginManager_RegisterPlugin(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
-
-	// Test successful registration
-	err := pm.RegisterPlugin(plugin)
+	err := registerPluginIns("database", "mysql", "default", plugin)
 	if err != nil {
-		t.Errorf("Expected no error during registration, got %v", err)
+		t.Fatalf("Expected no error, got: %v", err)
 	}
 
 	// Verify plugin is registered
-	registeredPlugin := pm.GetPlugin("test-plugin")
-	if registeredPlugin != plugin {
-		t.Error("Expected registered plugin to be returned")
-	}
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
 
-	// Test duplicate registration
-	err = pm.RegisterPlugin(plugin)
-	if err == nil {
-		t.Error("Expected error for duplicate registration, got nil")
+	if _, ok := _pluginMgr.insMap["database"]; !ok {
+		t.Fatal("Factory type 'database' not registered")
 	}
-
-	// Test nil plugin
-	err = pm.RegisterPlugin(nil)
-	if err == nil {
-		t.Error("Expected error for nil plugin, got nil")
+	if _, ok := _pluginMgr.insMap["database"]["mysql"]; !ok {
+		t.Fatal("Factory name 'mysql' not registered")
 	}
-
-	// Test plugin with empty name
-	emptyNamePlugin := newMockPlugin("", "1.0.0", []string{})
-	err = pm.RegisterPlugin(emptyNamePlugin)
-	if err == nil {
-		t.Error("Expected error for empty name, got nil")
+	if _, ok := _pluginMgr.insMap["database"]["mysql"]["default"]; !ok {
+		t.Fatal("Plugin instance 'default' not registered")
 	}
 }
 
-func TestPluginManager_UnregisterPlugin(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
+// TestRegisterPluginIns_DuplicateInstance tests duplicate plugin registration
+func TestRegisterPluginIns_DuplicateInstance(t *testing.T) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
 
-	// Register plugin
-	err := pm.RegisterPlugin(plugin)
+	plugin1 := &mockPlugin{factoryName: "test_factory", config: map[string]any{"name": "test1"}}
+	plugin2 := &mockPlugin{factoryName: "test_factory", config: map[string]any{"name": "test2"}}
+
+	// First registration should succeed
+	err := registerPluginIns("cache", "redis", "instance1", plugin1)
 	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
+		t.Fatalf("First registration failed: %v", err)
 	}
 
-	// Test successful unregistration
-	err = pm.UnregisterPlugin("test-plugin")
-	if err != nil {
-		t.Errorf("Expected no error during unregistration, got %v", err)
-	}
-
-	// Verify plugin is unregistered
-	registeredPlugin := pm.GetPlugin("test-plugin")
-	if registeredPlugin != nil {
-		t.Error("Expected plugin to be unregistered")
-	}
-
-	// Test unregistering non-existent plugin
-	err = pm.UnregisterPlugin("non-existent")
+	// Duplicate registration should fail
+	err = registerPluginIns("cache", "redis", "instance1", plugin2)
 	if err == nil {
-		t.Error("Expected error for non-existent plugin, got nil")
+		t.Fatal("Expected error for duplicate registration, got nil")
+	}
+	expectedErr := "plugin instance1 already exists"
+	if err.Error() != expectedErr {
+		t.Errorf("Expected error '%s', got '%s'", expectedErr, err.Error())
 	}
 }
 
-func TestPluginManager_StartAll(t *testing.T) {
-	pm := NewPluginManager()
+// TestRegisterPluginIns_MultipleFactoryTypes tests multiple factory types
+func TestRegisterPluginIns_MultipleFactoryTypes(t *testing.T) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
 
-	// Test starting with no plugins
-	err := pm.StartAll()
-	if err != nil {
-		t.Errorf("Expected no error when starting no plugins, got %v", err)
+	testCases := []struct {
+		factoryType  string
+		factoryName  string
+		instanceName string
+	}{
+		{"database", "mysql", "master"},
+		{"database", "mysql", "slave"},
+		{"database", "postgres", "default"},
+		{"cache", "redis", "session"},
+		{"cache", "memcached", "default"},
+		{"mq", "kafka", "producer"},
 	}
 
-	// Register plugins with dependencies
-	plugin1 := newMockPlugin("plugin1", "1.0.0", []string{})
-	plugin2 := newMockPlugin("plugin2", "1.0.0", []string{"plugin1"})
-	plugin3 := newMockPlugin("plugin3", "1.0.0", []string{"plugin1", "plugin2"})
-
-	err = pm.RegisterPlugin(plugin1)
-	if err != nil {
-		t.Fatalf("Failed to register plugin1: %v", err)
-	}
-
-	err = pm.RegisterPlugin(plugin2)
-	if err != nil {
-		t.Fatalf("Failed to register plugin2: %v", err)
-	}
-
-	err = pm.RegisterPlugin(plugin3)
-	if err != nil {
-		t.Fatalf("Failed to register plugin3: %v", err)
-	}
-
-	// Test successful start all
-	err = pm.StartAll()
-	if err != nil {
-		t.Errorf("Expected no error during start all, got %v", err)
-	}
-
-	// Verify all plugins are started
-	if !plugin1.IsStarted() {
-		t.Error("Expected plugin1 to be started")
-	}
-	if !plugin2.IsStarted() {
-		t.Error("Expected plugin2 to be started")
-	}
-	if !plugin3.IsStarted() {
-		t.Error("Expected plugin3 to be started")
-	}
-
-	// Verify plugin info status
-	info1, err := pm.GetPluginInfo("plugin1")
-	if err != nil {
-		t.Fatalf("Failed to get plugin1 info: %v", err)
-	}
-	if info1.Status != PluginStatusStarted {
-		t.Errorf("Expected plugin1 status to be Started, got %v", info1.Status)
-	}
-}
-
-func TestPluginManager_StartAll_WithInitError(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
-	plugin.initError = errors.New("init error")
-
-	err := pm.RegisterPlugin(plugin)
-	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
-	}
-
-	// Test start all with init error
-	err = pm.StartAll()
-	if err == nil {
-		t.Error("Expected error during start all with init error, got nil")
-	}
-
-	// Verify plugin error status
-	info, err := pm.GetPluginInfo("test-plugin")
-	if err != nil {
-		t.Fatalf("Failed to get plugin info: %v", err)
-	}
-	if info.Status != PluginStatusError {
-		t.Errorf("Expected plugin status to be Error, got %v", info.Status)
-	}
-	if info.Error == nil {
-		t.Error("Expected plugin error to be set")
-	}
-}
-
-func TestPluginManager_StartAll_WithStartError(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
-	plugin.startError = errors.New("start error")
-
-	err := pm.RegisterPlugin(plugin)
-	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
-	}
-
-	// Test start all with start error
-	err = pm.StartAll()
-	if err == nil {
-		t.Error("Expected error during start all with start error, got nil")
-	}
-
-	// Verify plugin error status
-	info, err := pm.GetPluginInfo("test-plugin")
-	if err != nil {
-		t.Fatalf("Failed to get plugin info: %v", err)
-	}
-	if info.Status != PluginStatusError {
-		t.Errorf("Expected plugin status to be Error, got %v", info.Status)
-	}
-}
-
-func TestPluginManager_StopAll(t *testing.T) {
-	pm := NewPluginManager()
-
-	// Test stopping with no plugins
-	err := pm.StopAll()
-	if err != nil {
-		t.Errorf("Expected no error when stopping no plugins, got %v", err)
-	}
-
-	// Register and start plugins
-	plugin1 := newMockPlugin("plugin1", "1.0.0", []string{})
-	plugin2 := newMockPlugin("plugin2", "1.0.0", []string{"plugin1"})
-
-	err = pm.RegisterPlugin(plugin1)
-	if err != nil {
-		t.Fatalf("Failed to register plugin1: %v", err)
-	}
-
-	err = pm.RegisterPlugin(plugin2)
-	if err != nil {
-		t.Fatalf("Failed to register plugin2: %v", err)
-	}
-
-	// Start all plugins
-	err = pm.StartAll()
-	if err != nil {
-		t.Fatalf("Failed to start all plugins: %v", err)
-	}
-
-	// Test successful stop all
-	err = pm.StopAll()
-	if err != nil {
-		t.Errorf("Expected no error during stop all, got %v", err)
-	}
-
-	// Verify all plugins are stopped
-	if !plugin1.IsStopped() {
-		t.Error("Expected plugin1 to be stopped")
-	}
-	if !plugin2.IsStopped() {
-		t.Error("Expected plugin2 to be stopped")
-	}
-
-	// Verify plugin info status
-	info1, err := pm.GetPluginInfo("plugin1")
-	if err != nil {
-		t.Fatalf("Failed to get plugin1 info: %v", err)
-	}
-	if info1.Status != PluginStatusStopped {
-		t.Errorf("Expected plugin1 status to be Stopped, got %v", info1.Status)
-	}
-}
-
-func TestPluginManager_StartPlugin(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
-
-	err := pm.RegisterPlugin(plugin)
-	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
-	}
-
-	// Test successful start
-	err = pm.StartPlugin("test-plugin")
-	if err != nil {
-		t.Errorf("Expected no error during start, got %v", err)
-	}
-
-	// Verify plugin is started
-	if !plugin.IsStarted() {
-		t.Error("Expected plugin to be started")
-	}
-
-	// Test starting already started plugin
-	err = pm.StartPlugin("test-plugin")
-	if err == nil {
-		t.Error("Expected error for already started plugin, got nil")
-	}
-
-	// Test starting non-existent plugin
-	err = pm.StartPlugin("non-existent")
-	if err == nil {
-		t.Error("Expected error for non-existent plugin, got nil")
-	}
-}
-
-func TestPluginManager_StopPlugin(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
-
-	err := pm.RegisterPlugin(plugin)
-	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
-	}
-
-	// Start plugin first
-	err = pm.StartPlugin("test-plugin")
-	if err != nil {
-		t.Fatalf("Failed to start plugin: %v", err)
-	}
-
-	// Test successful stop
-	err = pm.StopPlugin("test-plugin")
-	if err != nil {
-		t.Errorf("Expected no error during stop, got %v", err)
-	}
-
-	// Verify plugin is stopped
-	if !plugin.IsStopped() {
-		t.Error("Expected plugin to be stopped")
-	}
-
-	// Test stopping already stopped plugin
-	err = pm.StopPlugin("test-plugin")
-	if err == nil {
-		t.Error("Expected error for already stopped plugin, got nil")
-	}
-
-	// Test stopping non-existent plugin
-	err = pm.StopPlugin("non-existent")
-	if err == nil {
-		t.Error("Expected error for non-existent plugin, got nil")
-	}
-}
-
-func TestPluginManager_GetPluginInfo(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{"dep1", "dep2"})
-
-	err := pm.RegisterPlugin(plugin)
-	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
-	}
-
-	// Test getting plugin info
-	info, err := pm.GetPluginInfo("test-plugin")
-	if err != nil {
-		t.Errorf("Expected no error getting plugin info, got %v", err)
-	}
-
-	if info.Name != "test-plugin" {
-		t.Errorf("Expected name 'test-plugin', got '%s'", info.Name)
-	}
-	if info.Version != "1.0.0" {
-		t.Errorf("Expected version '1.0.0', got '%s'", info.Version)
-	}
-	if info.Status != PluginStatusRegistered {
-		t.Errorf("Expected status Registered, got %v", info.Status)
-	}
-	if len(info.Dependencies) != 2 {
-		t.Errorf("Expected 2 dependencies, got %d", len(info.Dependencies))
-	}
-
-	// Test getting non-existent plugin info
-	_, err = pm.GetPluginInfo("non-existent")
-	if err == nil {
-		t.Error("Expected error for non-existent plugin, got nil")
-	}
-}
-
-func TestPluginManager_ListPlugins(t *testing.T) {
-	pm := NewPluginManager()
-
-	// Test empty list
-	plugins := pm.ListPlugins()
-	if len(plugins) != 0 {
-		t.Errorf("Expected empty list, got %d plugins", len(plugins))
-	}
-
-	// Register multiple plugins
-	plugin1 := newMockPlugin("plugin1", "1.0.0", []string{})
-	plugin2 := newMockPlugin("plugin2", "2.0.0", []string{"plugin1"})
-
-	err := pm.RegisterPlugin(plugin1)
-	if err != nil {
-		t.Fatalf("Failed to register plugin1: %v", err)
-	}
-
-	err = pm.RegisterPlugin(plugin2)
-	if err != nil {
-		t.Fatalf("Failed to register plugin2: %v", err)
-	}
-
-	// Test list with plugins
-	plugins = pm.ListPlugins()
-	if len(plugins) != 2 {
-		t.Errorf("Expected 2 plugins, got %d", len(plugins))
-	}
-
-	// Verify plugin names are in the list
-	names := make(map[string]bool)
-	for _, plugin := range plugins {
-		names[plugin.Name] = true
-	}
-
-	if !names["plugin1"] || !names["plugin2"] {
-		t.Errorf("Expected both plugins in list, got %v", names)
-	}
-}
-
-func TestPluginManager_CircularDependency(t *testing.T) {
-	pm := NewPluginManager()
-
-	// Create plugins with circular dependency
-	plugin1 := newMockPlugin("plugin1", "1.0.0", []string{"plugin2"})
-	plugin2 := newMockPlugin("plugin2", "1.0.0", []string{"plugin1"})
-
-	err := pm.RegisterPlugin(plugin1)
-	if err != nil {
-		t.Fatalf("Failed to register plugin1: %v", err)
-	}
-
-	err = pm.RegisterPlugin(plugin2)
-	if err != nil {
-		t.Fatalf("Failed to register plugin2: %v", err)
-	}
-
-	// Test start all with circular dependency
-	err = pm.StartAll()
-	if err == nil {
-		t.Error("Expected error for circular dependency, got nil")
-	}
-}
-
-func TestPluginManager_MissingDependency(t *testing.T) {
-	pm := NewPluginManager()
-
-	// Create plugin with missing dependency
-	plugin := newMockPlugin("plugin", "1.0.0", []string{"missing-plugin"})
-
-	err := pm.RegisterPlugin(plugin)
-	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
-	}
-
-	// Test start all with missing dependency
-	err = pm.StartAll()
-	if err == nil {
-		t.Error("Expected error for missing dependency, got nil")
-	}
-}
-
-func TestPluginManager_ConcurrentAccess(t *testing.T) {
-	pm := NewPluginManager()
-	done := make(chan bool, 3)
-
-	// Goroutine 1: Register plugins
-	go func() {
-		for i := 0; i < 10; i++ {
-			plugin := newMockPlugin(fmt.Sprintf("plugin-%d", i), "1.0.0", []string{})
-			pm.RegisterPlugin(plugin)
+	for _, tc := range testCases {
+		plugin := &mockPlugin{
+			factoryName: tc.factoryName,
+			config:      map[string]any{"name": tc.instanceName},
 		}
-		done <- true
-	}()
-
-	// Goroutine 2: Get plugins
-	go func() {
-		for i := 0; i < 10; i++ {
-			pm.GetPlugin(fmt.Sprintf("plugin-%d", i))
+		err := registerPluginIns(tc.factoryType, tc.factoryName, tc.instanceName, plugin)
+		if err != nil {
+			t.Fatalf("Failed to register %s/%s/%s: %v", tc.factoryType, tc.factoryName, tc.instanceName, err)
 		}
-		done <- true
-	}()
-
-	// Goroutine 3: List plugins
-	go func() {
-		for i := 0; i < 10; i++ {
-			pm.ListPlugins()
-		}
-		done <- true
-	}()
-
-	// Wait for all goroutines to complete
-	for i := 0; i < 3; i++ {
-		<-done
 	}
 
-	// Verify some plugins were registered
-	plugins := pm.ListPlugins()
-	if len(plugins) == 0 {
-		t.Error("Expected some plugins to be registered")
+	// Verify all registrations
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+
+	if len(_pluginMgr.insMap) != 3 {
+		t.Errorf("Expected 3 factory types, got %d", len(_pluginMgr.insMap))
+	}
+	if len(_pluginMgr.insMap["database"]) != 2 {
+		t.Errorf("Expected 2 database factories, got %d", len(_pluginMgr.insMap["database"]))
+	}
+	if len(_pluginMgr.insMap["database"]["mysql"]) != 2 {
+		t.Errorf("Expected 2 mysql instances, got %d", len(_pluginMgr.insMap["database"]["mysql"]))
 	}
 }
 
-func TestPluginManager_UnregisterStartedPlugin(t *testing.T) {
-	pm := NewPluginManager()
-	plugin := newMockPlugin("test-plugin", "1.0.0", []string{})
+// TestRegisterPluginIns_ConcurrentRegistration tests concurrent plugin registration
+// This is critical for Linux multi-core environments where multiple goroutines
+// may register plugins simultaneously during server startup
+func TestRegisterPluginIns_ConcurrentRegistration(t *testing.T) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
 
-	// Register and start plugin
-	err := pm.RegisterPlugin(plugin)
+	const numGoroutines = 100
+	const numPluginsPerGoroutine = 10
+
+	var wg sync.WaitGroup
+	var successCount int32
+	var errorCount int32
+
+	// Launch concurrent registrations
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+			for j := 0; j < numPluginsPerGoroutine; j++ {
+				plugin := &mockPlugin{
+					factoryName: fmt.Sprintf("factory_%d", goroutineID),
+					config:      map[string]any{"id": goroutineID*numPluginsPerGoroutine + j},
+				}
+				instanceName := fmt.Sprintf("instance_%d_%d", goroutineID, j)
+				err := registerPluginIns("concurrent_test", "test_factory", instanceName, plugin)
+				if err != nil {
+					atomic.AddInt32(&errorCount, 1)
+					t.Logf("Registration failed: %v", err)
+				} else {
+					atomic.AddInt32(&successCount, 1)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	expectedSuccess := int32(numGoroutines * numPluginsPerGoroutine)
+	if successCount != expectedSuccess {
+		t.Errorf("Expected %d successful registrations, got %d (errors: %d)",
+			expectedSuccess, successCount, errorCount)
+	}
+
+	// Verify all plugins are registered
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+
+	totalRegistered := len(_pluginMgr.insMap["concurrent_test"]["test_factory"])
+	if totalRegistered != int(expectedSuccess) {
+		t.Errorf("Expected %d registered plugins, got %d", expectedSuccess, totalRegistered)
+	}
+}
+
+// TestRegisterPluginIns_ConcurrentDuplicateRegistration tests concurrent duplicate registration
+// This simulates race conditions in Linux multi-core environments
+func TestRegisterPluginIns_ConcurrentDuplicateRegistration(t *testing.T) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
+
+	const numGoroutines = 50
+	const instanceName = "duplicate_instance"
+
+	var wg sync.WaitGroup
+	var successCount int32
+	var errorCount int32
+
+	// All goroutines try to register the same instance
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			plugin := &mockPlugin{
+				factoryName: "test_factory",
+				config:      map[string]any{"id": id},
+			}
+			err := registerPluginIns("race_test", "test_factory", instanceName, plugin)
+			if err != nil {
+				atomic.AddInt32(&errorCount, 1)
+			} else {
+				atomic.AddInt32(&successCount, 1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Only one should succeed, others should fail
+	if successCount != 1 {
+		t.Errorf("Expected exactly 1 successful registration, got %d", successCount)
+	}
+	if errorCount != int32(numGoroutines-1) {
+		t.Errorf("Expected %d errors, got %d", numGoroutines-1, errorCount)
+	}
+
+	// Verify only one instance is registered
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+
+	totalRegistered := len(_pluginMgr.insMap["race_test"]["test_factory"])
+	if totalRegistered != 1 {
+		t.Errorf("Expected 1 registered plugin, got %d", totalRegistered)
+	}
+}
+
+// TestRegisterPluginIns_NilPlugin tests registering nil plugin
+func TestRegisterPluginIns_NilPlugin(t *testing.T) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
+
+	// Registering nil plugin should succeed (no validation in registerPluginIns)
+	err := registerPluginIns("test", "test", "nil_instance", nil)
 	if err != nil {
-		t.Fatalf("Failed to register plugin: %v", err)
+		t.Fatalf("Expected no error for nil plugin, got: %v", err)
 	}
 
-	err = pm.StartPlugin("test-plugin")
-	if err != nil {
-		t.Fatalf("Failed to start plugin: %v", err)
+	// Verify nil plugin is registered
+	_pluginLock.RLock()
+	defer _pluginLock.RUnlock()
+
+	plugin := _pluginMgr.insMap["test"]["test"]["nil_instance"]
+	if plugin != nil {
+		t.Error("Expected nil plugin, got non-nil")
+	}
+}
+
+// BenchmarkRegisterPluginIns benchmarks plugin registration performance
+// Critical for Linux game server startup time optimization
+func BenchmarkRegisterPluginIns(b *testing.B) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
+
+	plugin := &mockPlugin{
+		factoryName: "bench_factory",
+		config:      map[string]any{"name": "bench"},
 	}
 
-	// Test unregistering started plugin
-	err = pm.UnregisterPlugin("test-plugin")
-	if err != nil {
-		t.Errorf("Expected no error unregistering started plugin, got %v", err)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		instanceName := fmt.Sprintf("instance_%d", i)
+		_ = registerPluginIns("benchmark", "test", instanceName, plugin)
 	}
+}
 
-	// Verify plugin is stopped and unregistered
-	if !plugin.IsStopped() {
-		t.Error("Expected plugin to be stopped during unregister")
-	}
+// BenchmarkRegisterPluginIns_Parallel benchmarks parallel plugin registration
+// Simulates Linux multi-core server startup scenario
+func BenchmarkRegisterPluginIns_Parallel(b *testing.B) {
+	// Reset plugin manager state
+	_pluginLock.Lock()
+	_pluginMgr.insMap = make(map[string]map[string]map[string]Plugin)
+	_pluginLock.Unlock()
 
-	registeredPlugin := pm.GetPlugin("test-plugin")
-	if registeredPlugin != nil {
-		t.Error("Expected plugin to be unregistered")
-	}
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			plugin := &mockPlugin{
+				factoryName: "parallel_factory",
+				config:      map[string]any{"id": i},
+			}
+			instanceName := fmt.Sprintf("parallel_instance_%d", i)
+			_ = registerPluginIns("parallel_bench", "test", instanceName, plugin)
+			i++
+		}
+	})
 }
