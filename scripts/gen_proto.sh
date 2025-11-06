@@ -23,6 +23,7 @@ PROTOC_OPTS=(
 # Directory mapping rules based on proto file names
 declare -A OUTPUT_DIRS=(
     ["asura_net.proto"]="./net"          # Network-related protos to net/
+    ["asura_db.proto"]="./db"            # Database-related protos to db/
 )
 
 # Default directory for unmatched proto files

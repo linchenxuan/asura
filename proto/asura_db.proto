@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package db;
+
+// Go package import path for generated code
+option go_package = "db";
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MessageOptions {
+    optional string primary_key = 60000;
+    repeated string index = 60001;
+}

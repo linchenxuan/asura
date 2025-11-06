@@ -13,6 +13,11 @@ import (
 type Type string
 
 const (
+	// DB DB插件类型.
+	DB = "db"
+)
+
+const (
 	DefaultInsName = "default" // DefaultInsName is the default instance name when not specified in config.
 )
 
